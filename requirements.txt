@@ -1,0 +1,4 @@
+# VCF Private AI Services Setup Script - Dependencies
+httpx>=0.27.0
+httpx-auth>=0.22.0
+pyyaml>=6.0

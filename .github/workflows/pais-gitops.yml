@@ -1,0 +1,93 @@
+name: PAIS GitOps
+
+# Reconcile the PAIS instance whenever the desired-state config changes.
+#   * setup_pais.py   applies additions + updates (idempotent)
+#   * cleanup_pais.py removes anything deleted from the config since the
+#     previous commit (compares prev vs current config.yaml)
+#
+# This repository's root contains config.yaml and the scripts directly.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "config.yaml"
+      - "*.py"
+      - ".github/workflows/pais-gitops.yml"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (log actions, make no API changes)"
+        type: boolean
+        default: false
+
+# Serialize runs so two pushes can't reconcile the same instance concurrently.
+concurrency:
+  group: pais-gitops
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    env:
+      # --- PAIS connection / OIDC (store these as repository secrets) ---
+      PAIS_BASE_URL: ${{ secrets.PAIS_BASE_URL }}
+      PAIS_TOKEN_URL: ${{ secrets.PAIS_TOKEN_URL }}
+      PAIS_CLIENT_ID: ${{ secrets.PAIS_CLIENT_ID }}
+      PAIS_USERNAME: ${{ secrets.PAIS_USERNAME }}
+      PAIS_PASSWORD: ${{ secrets.PAIS_PASSWORD }}
+      PAIS_SCOPE: ${{ secrets.PAIS_SCOPE }}
+      # --- Data-source credentials referenced as ${...} in config.yaml ---
+      GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+      S3_CREDENTIALS: ${{ secrets.S3_CREDENTIALS }}
+      # Compute a dry-run flag once for reuse below.
+      DRY_RUN_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
+
+    steps:
+      - name: Checkout (with previous commit for removal detection)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Extract previous config (for removal detection)
+        id: prev
+        shell: bash
+        run: |
+          set -euo pipefail
+          BEFORE="${{ github.event.before }}"
+          OUT="${RUNNER_TEMP}/old_config.yaml"
+
+          if [ -n "${BEFORE}" ] && [ "${BEFORE}" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "${BEFORE}:config.yaml" 2>/dev/null; then
+            git show "${BEFORE}:config.yaml" > "$OUT"
+            echo "has_old=true" >> "$GITHUB_OUTPUT"
+            echo "Captured previous config from ${BEFORE}"
+          elif git rev-parse HEAD~1 >/dev/null 2>&1 && git cat-file -e "HEAD~1:config.yaml" 2>/dev/null; then
+            git show "HEAD~1:config.yaml" > "$OUT"
+            echo "has_old=true" >> "$GITHUB_OUTPUT"
+            echo "Captured previous config from HEAD~1"
+          else
+            echo "has_old=false" >> "$GITHUB_OUTPUT"
+            echo "No previous config available - removals will be skipped (first apply)."
+          fi
+
+      - name: Apply additions and updates
+        run: python setup_pais.py --config config.yaml ${DRY_RUN_FLAG}
+
+      - name: Apply removals
+        if: steps.prev.outputs.has_old == 'true'
+        run: |
+          python cleanup_pais.py \
+            --old-config "${RUNNER_TEMP}/old_config.yaml" \
+            --new-config config.yaml ${DRY_RUN_FLAG}

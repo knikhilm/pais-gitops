@@ -1,0 +1,165 @@
+# ============================================================
+# VCF Private AI Services (PAIS) - Setup Configuration File
+# ============================================================
+# Fill in your environment-specific values before running the
+# setup script. All names used in cross-references (e.g.
+# knowledge_bases.data_sources[]) must match the name field
+# of the referenced object exactly.
+# ============================================================
+
+# ----------------------------------------------------------
+# Connection & Authentication
+# ----------------------------------------------------------
+# Values written as ${VAR} are interpolated from environment variables at
+# runtime, so no secrets are committed to git. In CI these come from GitHub
+# Actions secrets. Environment variables of the same name (e.g. PAIS_BASE_URL)
+# also override these values directly. For local testing you may inline real
+# values instead of using ${...} placeholders.
+pais:
+  base_url: "${PAIS_BASE_URL}"              # e.g. https://pais.local
+  auth:
+    token_url: "${PAIS_TOKEN_URL}"
+    client_id: "${PAIS_CLIENT_ID}"
+    scope: "openid"
+    username: "${PAIS_USERNAME}"
+    password: "${PAIS_PASSWORD}"
+    # Set verify_ssl: false only for dev/self-signed certs; never in production
+    verify_ssl: true
+  # How long to wait for built-in REX search tools to appear after index creation
+  rex_discovery_timeout_seconds: 30
+
+# ----------------------------------------------------------
+# Data Sources
+# Supported types: GOOGLE_DRIVE, S3, SHAREPOINT, WEB, LOCAL
+# credentials must be a JSON string (will be escaped)
+# ----------------------------------------------------------
+data_sources:
+  - name: "gdrive-product-docs"
+    description: "Product documentation stored in Google Drive"
+    type: "GOOGLE_DRIVE"
+    origin_url: "https://drive.google.com/drive/u/0/folders/REPLACE_WITH_FOLDER_ID"
+    # The full service-account JSON is injected from the GDRIVE_CREDENTIALS
+    # secret/env var (a single-line JSON string). Expected shape:
+    #   {"type":"service_account","project_id":"...","private_key":"...", ...}
+    credentials: "${GDRIVE_CREDENTIALS}"
+    # Run a connectivity test before creating; script will abort on failure
+    test_connection: true
+
+  - name: "s3-support-articles"
+    description: "Support KB articles stored in an S3 bucket"
+    type: "S3"
+    origin_url: "s3://my-bucket/support-articles/"
+    # Injected from the S3_CREDENTIALS secret/env var. Expected shape:
+    #   {"aws_access_key_id":"...","aws_secret_access_key":"...","region_name":"us-east-1"}
+    credentials: "${S3_CREDENTIALS}"
+    test_connection: true
+
+# ----------------------------------------------------------
+# Knowledge Bases
+# Each knowledge base can link one or more data sources and
+# must have exactly one index definition.
+# ----------------------------------------------------------
+knowledge_bases:
+  - name: "product-docs-kb"
+    description: "Knowledge base for product documentation"
+    data_origin_type: "DATA_SOURCES"
+    index_refresh_policy:
+      policy_type: "MANUAL"           # MANUAL | SCHEDULED
+      # Uncomment for scheduled refresh:
+      # policy_type: "SCHEDULED"
+      # interval_seconds: 3600        # refresh every hour
+    # Names must match entries in the data_sources section above
+    data_sources:
+      - "gdrive-product-docs"
+    index:
+      name: "product-docs-index"
+      description: "Sentence-split index with small BGE embeddings"
+      embeddings_model_endpoint: "BAAI/bge-small-en-v1.5"
+      text_splitting: "SENTENCE"      # SENTENCE | FIXED
+      chunk_size: 100
+      chunk_overlap: 0
+      # Trigger an initial indexing run right after creation
+      trigger_indexing: true
+      # Block until indexing reaches DONE or FAILED (recommended for first run)
+      wait_for_indexing: true
+      indexing_timeout_seconds: 300
+
+  - name: "support-articles-kb"
+    description: "Knowledge base for support articles"
+    data_origin_type: "DATA_SOURCES"
+    index_refresh_policy:
+      policy_type: "MANUAL"
+    data_sources:
+      - "s3-support-articles"
+    index:
+      name: "support-articles-index"
+      description: "Sentence-split index for support articles"
+      embeddings_model_endpoint: "BAAI/bge-small-en-v1.5"
+      text_splitting: "SENTENCE"
+      chunk_size: 150
+      chunk_overlap: 20
+      trigger_indexing: true
+      wait_for_indexing: true
+      indexing_timeout_seconds: 300
+
+# ----------------------------------------------------------
+# MCP Servers
+# transport options: STREAMABLE_HTTP | SSE
+# List the tool names you want to approve under approve_tools.
+# Tools not listed here are registered but left unapproved.
+# ----------------------------------------------------------
+mcp_servers:
+  - name: "weather-service"
+    description: "Real-time weather data MCP server"
+    url: "https://weather-mcp-server.example.com"
+    transport: "STREAMABLE_HTTP"
+    approve_tools:
+      - "get_current_weather"
+      - "get_forecast"
+
+  - name: "ticketing-service"
+    description: "Internal ticketing system MCP server"
+    url: "https://ticketing-mcp.internal.example.com"
+    transport: "STREAMABLE_HTTP"
+    approve_tools:
+      - "create_ticket"
+      - "search_tickets"
+      - "update_ticket"
+
+# ----------------------------------------------------------
+# Agents
+# knowledge_bases: reference by name; the script resolves the
+#   corresponding REX search tool ID automatically.
+# mcp_tools: reference by server name + tool name; the script
+#   resolves the tool ID from the registered server.
+# ----------------------------------------------------------
+agents:
+  - name: "product-support-agent"
+    description: "Agent with access to product docs and support articles plus live tools"
+    model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    instructions: >
+      You are a helpful product-support assistant. Use the knowledge base to
+      answer questions about products and support cases. When users ask about
+      current weather or need to create/search tickets, use the appropriate
+      tools. Always be polite and concise.
+    completion_role: "assistant"
+    session_max_length: 10000
+    session_summarization_strategy: "delete_oldest"   # delete_oldest | summarize
+    chat_system_instruction_mode: "system-message"     # system-message | user-message
+    index_reference_format: "structured"               # structured | plain | null
+    # Knowledge bases to attach (resolved to REX search tool links)
+    knowledge_bases:
+      - name: "product-docs-kb"
+        top_n: 5
+        similarity_cutoff: 0.65
+      - name: "support-articles-kb"
+        top_n: 3
+        similarity_cutoff: 0.70
+    # External MCP tools to attach (must be approved)
+    mcp_tools:
+      - server: "weather-service"
+        tool_name: "get_current_weather"
+      - server: "ticketing-service"
+        tool_name: "create_ticket"
+      - server: "ticketing-service"
+        tool_name: "search_tickets"
