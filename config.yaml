@@ -1,86 +1,134 @@
 # ============================================================
-# VCF Private AI Services (PAIS) - Setup Configuration File
+# VCF Private AI Services (PAIS) - Unified Configuration File
 # ============================================================
-# Fill in your environment-specific values before running the
-# setup script. All names used in cross-references (e.g.
-# knowledge_bases.data_sources[]) must match the name field
-# of the referenced object exactly.
+# Declaratively manages both Kubernetes Control Plane CRDs
+# (ModelEndpoints & InferenceGatewayRoutes) and REST Data/Agent Plane resources
+# (Data Sources, Knowledge Bases, Indexes, MCP Servers, and Agents).
 # ============================================================
 
 # ----------------------------------------------------------
 # Connection & Authentication
 # ----------------------------------------------------------
-# Values written as ${VAR} are interpolated from environment variables at
-# runtime, so no secrets are committed to git. In CI these come from GitHub
-# Actions secrets. Environment variables of the same name (e.g. PAIS_BASE_URL)
-# also override these values directly. For local testing you may inline real
-# values instead of using ${...} placeholders.
 pais:
-  base_url: "${PAIS_BASE_URL}"              # e.g. https://pais.local
+  base_url: "${PAIS_BASE_URL}"              # REST Data/Agent Plane API endpoint
   auth:
     token_url: "${PAIS_TOKEN_URL}"
     client_id: "${PAIS_CLIENT_ID}"
     scope: "openid"
     username: "${PAIS_USERNAME}"
     password: "${PAIS_PASSWORD}"
-    # Set verify_ssl: false only for dev/self-signed certs; never in production
     verify_ssl: true
-  # How long to wait for built-in REX search tools to appear after index creation
   rex_discovery_timeout_seconds: 30
 
-# ----------------------------------------------------------
-# Data Sources
-# Supported types: GOOGLE_DRIVE, S3, SHAREPOINT, WEB, LOCAL
-# credentials must be a JSON string (will be escaped)
-# ----------------------------------------------------------
+kubernetes:
+  namespace: "default"                      # Default K8s namespace for CRDs
+
+# ============================================================
+# 1. KUBERNETES MODEL ENDPOINTS (pais.vmware.com/v1alpha1 -> ModelEndpoint)
+# ============================================================
+# Requests to serve AI models on vSphere/VKS node pools using vLLM, Infinity, or LlamaCPP
+model_endpoints:
+  - name: "llama3-8b-endpoint"
+    namespace: "default"
+    type: "Completions"                     # Completions | Embeddings
+    engine: "vLLM"                          # vLLM | Infinity | LlamaCPP
+    routing_name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    replicas: 1
+    virtual_machine_class_name: "nvidia-a10g-gpu-class"
+    storage_class_name: "vsan-default-storage-class"
+    failure_domain: "zone-1"
+    model:
+      oci_ref: "harbor.internal.example.com/pais/models/meta-llama-3.1-8b-instruct:v1"
+      pull_secrets:
+        - name: "harbor-registry-secret"
+    inference_server_customization:
+      cli_args:
+        - "--max-model-len=8192"
+        - "--gpu-memory-utilization=0.90"
+      env_vars:
+        - name: "PAIH_MODEL_ID"
+          value: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+      shared_memory_mount_size: "2Gi"
+
+  - name: "bge-small-endpoint"
+    namespace: "default"
+    type: "Embeddings"
+    engine: "Infinity"
+    routing_name: "BAAI/bge-small-en-v1.5"
+    replicas: 1
+    virtual_machine_class_name: "small-cpu-class"
+    storage_class_name: "vsan-default-storage-class"
+    model:
+      oci_ref: "harbor.internal.example.com/pais/models/bge-small-en-v1.5:v1"
+      pull_secrets:
+        - name: "harbor-registry-secret"
+
+# ============================================================
+# 2. INFERENCE GATEWAY ROUTES (pais.vmware.com/v1alpha1 -> InferenceGatewayRoute)
+# ============================================================
+# Routing rules exposing models via the PAIS Data Plane API or routing to remote/external LLMs
+inference_routes:
+  - name: "route-llama3-8b"
+    namespace: "default"
+    type: "Completions"
+    engine: "vLLM"
+    matches:
+      routing_name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    backend:
+      http_base_url: "http://llama3-8b-endpoint.default.svc.cluster.local"
+      model_id: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+      tls:
+        verification: "strict"
+
+  - name: "route-bge-small"
+    namespace: "default"
+    type: "Embeddings"
+    engine: "Infinity"
+    matches:
+      routing_name: "BAAI/bge-small-en-v1.5"
+    backend:
+      http_base_url: "http://bge-small-endpoint.default.svc.cluster.local"
+      model_id: "BAAI/bge-small-en-v1.5"
+      tls:
+        verification: "strict"
+
+# ============================================================
+# 3. REST DATA SOURCES
+# ============================================================
 data_sources:
   - name: "gdrive-product-docs"
     description: "Product documentation stored in Google Drive"
     type: "GOOGLE_DRIVE"
     origin_url: "https://drive.google.com/drive/u/0/folders/REPLACE_WITH_FOLDER_ID"
-    # The full service-account JSON is injected from the GDRIVE_CREDENTIALS
-    # secret/env var (a single-line JSON string). Expected shape:
-    #   {"type":"service_account","project_id":"...","private_key":"...", ...}
     credentials: "${GDRIVE_CREDENTIALS}"
-    # Run a connectivity test before creating; script will abort on failure
     test_connection: true
 
   - name: "s3-support-articles"
     description: "Support KB articles stored in an S3 bucket"
     type: "S3"
     origin_url: "s3://my-bucket/support-articles/"
-    # Injected from the S3_CREDENTIALS secret/env var. Expected shape:
-    #   {"aws_access_key_id":"...","aws_secret_access_key":"...","region_name":"us-east-1"}
     credentials: "${S3_CREDENTIALS}"
     test_connection: true
 
-# ----------------------------------------------------------
-# Knowledge Bases
-# Each knowledge base can link one or more data sources and
-# must have exactly one index definition.
-# ----------------------------------------------------------
+# ============================================================
+# 4. KNOWLEDGE BASES & INDEXES
+# ============================================================
 knowledge_bases:
   - name: "product-docs-kb"
     description: "Knowledge base for product documentation"
     data_origin_type: "DATA_SOURCES"
     index_refresh_policy:
-      policy_type: "MANUAL"           # MANUAL | SCHEDULED
-      # Uncomment for scheduled refresh:
-      # policy_type: "SCHEDULED"
-      # interval_seconds: 3600        # refresh every hour
-    # Names must match entries in the data_sources section above
+      policy_type: "MANUAL"
     data_sources:
       - "gdrive-product-docs"
     index:
       name: "product-docs-index"
       description: "Sentence-split index with small BGE embeddings"
       embeddings_model_endpoint: "BAAI/bge-small-en-v1.5"
-      text_splitting: "SENTENCE"      # SENTENCE | FIXED
+      text_splitting: "SENTENCE"
       chunk_size: 100
       chunk_overlap: 0
-      # Trigger an initial indexing run right after creation
       trigger_indexing: true
-      # Block until indexing reaches DONE or FAILED (recommended for first run)
       wait_for_indexing: true
       indexing_timeout_seconds: 300
 
@@ -102,12 +150,9 @@ knowledge_bases:
       wait_for_indexing: true
       indexing_timeout_seconds: 300
 
-# ----------------------------------------------------------
-# MCP Servers
-# transport options: STREAMABLE_HTTP | SSE
-# List the tool names you want to approve under approve_tools.
-# Tools not listed here are registered but left unapproved.
-# ----------------------------------------------------------
+# ============================================================
+# 5. MCP SERVERS & TOOL APPROVALS
+# ============================================================
 mcp_servers:
   - name: "weather-service"
     description: "Real-time weather data MCP server"
@@ -126,13 +171,9 @@ mcp_servers:
       - "search_tickets"
       - "update_ticket"
 
-# ----------------------------------------------------------
-# Agents
-# knowledge_bases: reference by name; the script resolves the
-#   corresponding REX search tool ID automatically.
-# mcp_tools: reference by server name + tool name; the script
-#   resolves the tool ID from the registered server.
-# ----------------------------------------------------------
+# ============================================================
+# 6. AGENTS
+# ============================================================
 agents:
   - name: "product-support-agent"
     description: "Agent with access to product docs and support articles plus live tools"
@@ -144,10 +185,9 @@ agents:
       tools. Always be polite and concise.
     completion_role: "assistant"
     session_max_length: 10000
-    session_summarization_strategy: "delete_oldest"   # delete_oldest | summarize
-    chat_system_instruction_mode: "system-message"     # system-message | user-message
-    index_reference_format: "structured"               # structured | plain | null
-    # Knowledge bases to attach (resolved to REX search tool links)
+    session_summarization_strategy: "delete_oldest"
+    chat_system_instruction_mode: "system-message"
+    index_reference_format: "structured"
     knowledge_bases:
       - name: "product-docs-kb"
         top_n: 5
@@ -155,7 +195,6 @@ agents:
       - name: "support-articles-kb"
         top_n: 3
         similarity_cutoff: 0.70
-    # External MCP tools to attach (must be approved)
     mcp_tools:
       - server: "weather-service"
         tool_name: "get_current_weather"

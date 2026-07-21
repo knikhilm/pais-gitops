@@ -8,6 +8,7 @@ handles additions/updates).
 
 What it detects and removes (by name) when an item disappears from config:
 
+  * ModelEndpoints & InferenceGatewayRoutes -> kubectl delete CRDs
   * Agents removed                 -> DELETE agent
   * Knowledge bases removed        -> DELETE knowledge base (cascades index + REX tool)
   * MCP servers removed            -> DELETE MCP server (cascades its tools)
@@ -16,8 +17,8 @@ What it detects and removes (by name) when an item disappears from config:
   * Data sources unlinked from a (kept) KB         -> DELETE the KB<->DS link
 
 Deletion order respects dependencies (agents first, then KBs/servers, then
-data sources) so the API does not reject a delete whose object is still in
-use (e.g. an MCP server whose tool is still linked to an agent -> HTTP 409).
+data sources and model CRDs) so the API does not reject a delete whose object is
+still in use (e.g. an MCP server whose tool is still linked to an agent -> HTTP 409).
 
 Usage
 -----
@@ -34,6 +35,7 @@ import argparse
 import os
 import sys
 
+import k8s_manager as km
 import pais_client as pc
 from pais_client import log
 
@@ -140,7 +142,6 @@ def unlink_removed_data_sources(client: pc.PAISClient, old: dict, new: dict, dry
             continue
         kb_id = kb_obj["id"]
         links = client.list_all(pc.kb_data_source_links(kb_id))
-        # Map data-source name -> link id (link carries nested data_source object)
         link_by_ds_name = {
             (lnk.get("data_source") or {}).get("name"): lnk.get("id")
             for lnk in links
@@ -239,14 +240,15 @@ def main(argv: list[str] | None = None) -> None:
         log.info("No previous config provided/found - nothing to remove (first apply).")
         return
 
-    # Names don't need env expansion, but credentials/auth might; expand both
-    # so the structures parse consistently.
     old_cfg = pc.load_config(args.old_config)
     new_cfg = pc.load_config(args.new_config)
 
-    # Connection settings come from the *current* config + environment.
+    # 1. Clean up removed K8s ModelEndpoints & InferenceGatewayRoutes
+    km.delete_removed_k8s_resources(old_cfg, new_cfg, dry_run=args.dry_run)
+
+    # 2. Clean up REST API resources
     base_url, auth_cfg, verify_ssl = pc.resolve_connection(new_cfg.get("pais", {}))
-    log.info("Target PAIS instance: %s", base_url)
+    log.info("Target PAIS REST instance: %s", base_url)
 
     if args.dry_run:
         client = pc.PAISClient.offline(base_url)
@@ -254,7 +256,6 @@ def main(argv: list[str] | None = None) -> None:
         client = pc.PAISClient(base_url, pc.build_auth(auth_cfg), verify_ssl=verify_ssl)
 
     try:
-        # Order matters: free up references before deleting the objects they point to.
         agents_removed = delete_removed_agents(client, old_cfg, new_cfg, args.dry_run)
         tools_revoked = revoke_removed_tool_approvals(client, old_cfg, new_cfg, args.dry_run)
         links_removed = unlink_removed_data_sources(client, old_cfg, new_cfg, args.dry_run)

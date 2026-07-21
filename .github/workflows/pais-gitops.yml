@@ -1,15 +1,14 @@
 name: PAIS GitOps
 
 # Reconcile the PAIS instance whenever the desired-state config changes.
+#   * k8s_manager.py  generates & reconciles ModelEndpoints and InferenceGatewayRoutes
 #   * setup_pais.py   applies additions + updates (idempotent)
 #   * cleanup_pais.py removes anything deleted from the config since the
 #     previous commit (compares prev vs current config.yaml)
-#
-# This repository's root contains config.yaml and the scripts directly.
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 21julyupdates ]
     paths:
       - "config.yaml"
       - "*.py"
@@ -21,7 +20,6 @@ on:
         type: boolean
         default: false
 
-# Serialize runs so two pushes can't reconcile the same instance concurrently.
 concurrency:
   group: pais-gitops
   cancel-in-progress: false
@@ -43,7 +41,8 @@ jobs:
       # --- Data-source credentials referenced as ${...} in config.yaml ---
       GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
       S3_CREDENTIALS: ${{ secrets.S3_CREDENTIALS }}
-      # Compute a dry-run flag once for reuse below.
+      # --- Kubeconfig if direct kubectl apply is enabled ---
+      KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
       DRY_RUN_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
 
     steps:
@@ -59,6 +58,13 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Set up Kubeconfig (if provided)
+        if: env.KUBECONFIG_DATA != ''
+        run: |
+          mkdir -p ~/.kube
+          echo "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
 
       - name: Extract previous config (for removal detection)
         id: prev
@@ -82,7 +88,7 @@ jobs:
             echo "No previous config available - removals will be skipped (first apply)."
           fi
 
-      - name: Apply additions and updates
+      - name: Apply additions and updates (Model Endpoints, Routes, KBs, Agents)
         run: python setup_pais.py --config config.yaml ${DRY_RUN_FLAG}
 
       - name: Apply removals
@@ -91,3 +97,11 @@ jobs:
           python cleanup_pais.py \
             --old-config "${RUNNER_TEMP}/old_config.yaml" \
             --new-config config.yaml ${DRY_RUN_FLAG}
+
+      - name: Upload Generated Kubernetes Manifests as Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8s-pais-manifests
+          path: k8s-manifests/
+          if-no-files-found: ignore
