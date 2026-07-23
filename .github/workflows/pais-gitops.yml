@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   reconcile:
-    runs-on: ubuntu-latest
+    runs-on: pais-gitops
     env:
       # --- PAIS connection / OIDC (store these as repository secrets) ---
       PAIS_BASE_URL: ${{ secrets.PAIS_BASE_URL }}
