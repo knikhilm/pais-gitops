@@ -277,6 +277,7 @@ def build_model_endpoint_crd(endpoint_cfg: dict, default_namespace: str | None =
         "engine": endpoint_cfg.get("engine", "vLLM"),
         "routingName": endpoint_cfg["routing_name"],
         "replicas": endpoint_cfg.get("replicas", 1),
+        "overrides": endpoint_cfg.get("overrides", ""),
     }
 
     if "virtual_machine_class_name" in endpoint_cfg:
@@ -304,7 +305,7 @@ def build_model_endpoint_crd(endpoint_cfg: dict, default_namespace: str | None =
         cust_spec: dict[str, Any] = {}
         if "cli_args" in cust:
             cust_spec["cliArgs"] = cust["cli_args"]
-        if "env_vars" in cust:
+        if cust.get("env_vars"):
             cust_spec["envVars"] = cust["env_vars"]
         if "engine_image" in cust:
             cust_spec["engineImage"] = cust["engine_image"]
@@ -316,8 +317,12 @@ def build_model_endpoint_crd(endpoint_cfg: dict, default_namespace: str | None =
             cust_spec["tempMountSize"] = cust["temp_mount_size"]
         spec["inferenceServerCustomization"] = cust_spec
 
+    annotations = dict(endpoint_cfg.get("annotations", {}))
+    annotations["pais.vmware.com/displayName"] = endpoint_cfg.get("display_name", name)
+
     metadata: dict[str, Any] = {
         "name": name,
+        "annotations": annotations,
         "labels": {
             "app.kubernetes.io/managed-by": "pais-gitops",
             "pais.vmware.com/routing-name": endpoint_cfg["routing_name"].replace("/", "-").lower(),
