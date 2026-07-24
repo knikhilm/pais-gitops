@@ -41,6 +41,7 @@ jobs:
       PAIS_BASE_URL: ${{ secrets.PAIS_BASE_URL }}
       PAIS_TOKEN_URL: ${{ secrets.PAIS_TOKEN_URL }}
       PAIS_CLIENT_ID: ${{ secrets.PAIS_CLIENT_ID }}
+      PAIS_CLIENT_SECRET: ${{ secrets.PAIS_CLIENT_SECRET }}
       PAIS_USERNAME: ${{ secrets.PAIS_USERNAME }}
       PAIS_PASSWORD: ${{ secrets.PAIS_PASSWORD }}
       PAIS_SCOPE: ${{ secrets.PAIS_SCOPE }}

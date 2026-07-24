@@ -89,7 +89,7 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     Environment variables always take precedence so that CI can inject
     secrets without committing them to git:
 
-      PAIS_BASE_URL, PAIS_TOKEN_URL, PAIS_CLIENT_ID,
+      PAIS_BASE_URL, PAIS_TOKEN_URL, PAIS_CLIENT_ID, PAIS_CLIENT_SECRET,
       PAIS_SCOPE, PAIS_USERNAME, PAIS_PASSWORD, PAIS_VERIFY_SSL
 
     Returns (base_url, auth_dict, verify_ssl).
@@ -101,13 +101,18 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     env_overrides = {
         "token_url": "PAIS_TOKEN_URL",
         "client_id": "PAIS_CLIENT_ID",
+        "client_secret": "PAIS_CLIENT_SECRET",
         "scope": "PAIS_SCOPE",
         "username": "PAIS_USERNAME",
         "password": "PAIS_PASSWORD",
     }
     for key, env_name in env_overrides.items():
         if os.environ.get(env_name) is not None:
-            auth_cfg[key] = os.environ[env_name]
+            val = os.environ[env_name].strip()
+            if val:
+                auth_cfg[key] = val
+            else:
+                auth_cfg[key] = ""
 
     verify_ssl = auth_cfg.get("verify_ssl", True)
     if os.environ.get("PAIS_VERIFY_SSL") is not None:
@@ -131,25 +136,31 @@ class OAuth2PasswordAuth(httpx.Auth):
         client_id: str,
         username: str,
         password: str,
-        scope: str = "openid",
+        client_secret: str | None = None,
+        scope: str | None = None,
         verify_ssl: bool = True,
     ) -> None:
         self.token_url = token_url
         self.client_id = client_id
         self.username = username
         self.password = password
+        self.client_secret = client_secret
         self.scope = scope
         self.verify_ssl = verify_ssl
         self._access_token: str | None = None
 
     def _fetch_token(self) -> str:
-        data = {
+        data: dict[str, str] = {
             "grant_type": "password",
             "client_id": self.client_id,
             "username": self.username,
             "password": self.password,
-            "scope": self.scope,
         }
+        if self.client_secret and self.client_secret.strip():
+            data["client_secret"] = self.client_secret.strip()
+        if self.scope and self.scope.strip():
+            data["scope"] = self.scope.strip()
+
         with httpx.Client(verify=self.verify_ssl, timeout=30) as client:
             resp = client.post(self.token_url, data=data)
             if resp.is_error:
@@ -184,7 +195,8 @@ def build_auth(auth_cfg: dict, verify_ssl: bool = True) -> OAuth2PasswordAuth:
         client_id=auth_cfg["client_id"],
         username=auth_cfg["username"],
         password=auth_cfg["password"],
-        scope=auth_cfg.get("scope", "openid"),
+        client_secret=auth_cfg.get("client_secret"),
+        scope=auth_cfg.get("scope"),
         verify_ssl=verify_ssl,
     )
 

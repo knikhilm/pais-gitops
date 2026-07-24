@@ -355,6 +355,8 @@ Secret interpolation uses `${ENV_VAR_NAME}` syntax:
 | `PAIS_BASE_URL` | Base URL of PAIS REST Data Plane API |
 | `PAIS_TOKEN_URL` | OIDC Token URL |
 | `PAIS_CLIENT_ID` | OIDC Client ID |
+| `PAIS_CLIENT_SECRET` | (Optional) OIDC Client Secret (for confidential clients) |
+| `PAIS_SCOPE` | (Optional) OIDC Scope (leave blank if default scope used) |
 | `PAIS_USERNAME` | OIDC Admin / User Username |
 | `PAIS_PASSWORD` | OIDC Password / Bearer Token |
 | `VCF_ENDPOINT` / `VSPHERE_SERVER` | VCF Supervisor Cluster FQDN or IP |
