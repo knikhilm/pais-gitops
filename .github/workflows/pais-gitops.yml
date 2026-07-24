@@ -41,8 +41,16 @@ jobs:
       # --- Data-source credentials referenced as ${...} in config.yaml ---
       GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
       S3_CREDENTIALS: ${{ secrets.S3_CREDENTIALS }}
-      # --- Kubeconfig if direct kubectl apply is enabled ---
+      # --- Kubeconfig / vSphere login secrets for K8s deployment ---
       KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
+      VSPHERE_SERVER: ${{ secrets.VSPHERE_SERVER }}
+      VSPHERE_USER: ${{ secrets.VSPHERE_USER }}
+      VSPHERE_PASSWORD: ${{ secrets.VSPHERE_PASSWORD }}
+      VSPHERE_NAMESPACE: ${{ secrets.VSPHERE_NAMESPACE }}
+      # --- OCI / Harbor Registry Credentials for Image Pull Secret ---
+      HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
+      HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
       DRY_RUN_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
 
     steps:

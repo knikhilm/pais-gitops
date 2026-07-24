@@ -13,23 +13,27 @@ unified YAML configuration file, reconciled automatically via GitHub Actions.
 ## Table of Contents
 
 1. [Architectural Overview](#1-architectural-overview)
-2. [Key Capabilities](#2-key-capabilities)
-3. [Repository Layout](#3-repository-layout)
-4. [Prerequisites](#4-prerequisites)
-5. [The Unified Configuration File (`config.yaml`)](#5-the-unified-configuration-file-configyaml)
-   - [5.1 Model Endpoint Deployment (`model_endpoints`)](#51-model-endpoint-deployment-model_endpoints)
-   - [5.2 Inference Gateway Routing (`inference_routes`)](#52-inference-gateway-routing-inference_routes)
-   - [5.3 Data Sources & Knowledge Bases](#53-data-sources--knowledge-bases)
-   - [5.4 MCP Servers & Tool Approvals](#54-mcp-servers--tool-approvals)
-   - [5.5 Agent & RAG Configuration](#55-agent--rag-configuration)
-6. [Model Endpoint Operations & Lifecycle Management](#6-model-endpoint-operations--lifecycle-management)
-7. [Secrets and Environment Variables](#7-secrets-and-environment-variables)
-8. [Local Execution & Dry Runs](#8-local-execution--dry-runs)
-9. [GitHub Secrets & GitOps Pipeline Setup](#9-github-secrets--gitops-pipeline-setup)
-10. [End-to-End Walkthrough Example](#10-end-to-end-walkthrough-example)
-11. [Reconciliation & Removal Logic](#11-reconciliation--removal-logic)
-12. [Troubleshooting](#12-troubleshooting)
-13. [CRD & REST API Reference Matrix](#13-crd--rest-api-reference-matrix)
+2. [Authentication & Login Architecture](#2-authentication--login-architecture)
+   - [2.1 Kubernetes Cluster Authentication (vSphere / VKS Login)](#21-kubernetes-cluster-authentication-vsphere--vks-login)
+   - [2.2 OCI Registry / Harbor Model Pull Authentication](#22-oci-registry--harbor-model-pull-authentication)
+   - [2.3 PAIS REST API Data Plane Authentication](#23-pais-rest-api-data-plane-authentication)
+3. [Key Capabilities](#3-key-capabilities)
+4. [Repository Layout](#4-repository-layout)
+5. [Prerequisites](#5-prerequisites)
+6. [The Unified Configuration File (`config.yaml`)](#6-the-unified-configuration-file-configyaml)
+   - [6.1 Model Endpoint Deployment (`model_endpoints`)](#61-model-endpoint-deployment-model_endpoints)
+   - [6.2 Inference Gateway Routing (`inference_routes`)](#62-inference-gateway-routing-inference_routes)
+   - [6.3 Data Sources & Knowledge Bases](#63-data-sources--knowledge-bases)
+   - [6.4 MCP Servers & Tool Approvals](#64-mcp-servers--tool-approvals)
+   - [6.5 Agent & RAG Configuration](#65-agent--rag-configuration)
+7. [Model Endpoint Operations & Lifecycle Management](#7-model-endpoint-operations--lifecycle-management)
+8. [Secrets and Environment Variables](#8-secrets-and-environment-variables)
+9. [Local Execution & Dry Runs](#9-local-execution--dry-runs)
+10. [GitHub Secrets & GitOps Pipeline Setup](#10-github-secrets--gitops-pipeline-setup)
+11. [End-to-End Walkthrough Example](#11-end-to-end-walkthrough-example)
+12. [Reconciliation & Removal Logic](#12-reconciliation--removal-logic)
+13. [Troubleshooting](#13-troubleshooting)
+14. [CRD & REST API Reference Matrix](#14-crd--rest-api-reference-matrix)
 
 ---
 
@@ -71,10 +75,85 @@ VMware Private AI Services (PAIS) operates across two primary planes:
 
 ---
 
-## 2. Key Capabilities
+## 2. Authentication & Login Architecture
+
+A common question when deploying ModelEndpoints is: **How does the pipeline log in to deploy Kubernetes CRDs and pull model weights?**
+
+The tooling uses a three-part authentication model:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       Authentication & Login Flow                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 1. Kubernetes Cluster Login:                                                │
+│    - vSphere SSO Login (`kubectl vsphere login` via VSPHERE_SERVER/USER/PASS)│
+│    - OR Kubeconfig (`KUBECONFIG_DATA` base64) / Bearer Token (`KUBE_TOKEN`) │
+│                                                                             │
+│ 2. OCI Model Registry Pull Authentication:                                  │
+│    - Automated `kubernetes.io/dockerconfigjson` Secret creation             │
+│    - Generated from `HARBOR_REGISTRY`, `HARBOR_USERNAME`, `HARBOR_PASSWORD` │
+│    - Referenced by `ModelEndpoint.spec.model.pullSecrets`                   │
+│                                                                             │
+│ 3. PAIS REST API Data Plane Authentication:                                 │
+│    - OIDC Resource Owner Password Flow via `PAIS_TOKEN_URL`, `PAIS_USERNAME`│
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.1 Kubernetes Cluster Authentication (vSphere / VKS Login)
+
+`k8s_manager.py` authenticates to the vSphere Supervisor Cluster / VKS cluster using one of three supported methods:
+
+- **Method A: vSphere with Tanzu Login (`kubectl vsphere login`)**  
+  Used when interacting with vSphere Supervisor Clusters. When `VSPHERE_SERVER`, `VSPHERE_USER`, and `VSPHERE_PASSWORD` are provided, the script runs:
+  ```bash
+  kubectl vsphere login \
+    --server=${VSPHERE_SERVER} \
+    --vsphere-username=${VSPHERE_USER} \
+    --vsphere-password=${VSPHERE_PASSWORD} \
+    --tanzu-kubernetes-cluster-namespace=${VSPHERE_NAMESPACE} \
+    --insecure-skip-tls-verify
+  ```
+
+- **Method B: ServiceAccount / Bearer Token Login**  
+  When `KUBE_SERVER` and `KUBE_TOKEN` are provided, the script sets up a context:
+  ```bash
+  kubectl config set-cluster pais-cluster --server=${KUBE_SERVER} --insecure-skip-tls-verify=true
+  kubectl config set-credentials pais-sa --token=${KUBE_TOKEN}
+  kubectl config set-context pais-context --cluster=pais-cluster --user=pais-sa --namespace=${KUBE_NAMESPACE}
+  kubectl config use-context pais-context
+  ```
+
+- **Method C: GitHub Actions Kubeconfig Secret (`KUBECONFIG_DATA`)**  
+  The workflow decodes `KUBECONFIG_DATA` to `~/.kube/config` before executing python scripts.
+
+### 2.2 OCI Registry / Harbor Model Pull Authentication
+
+Model weights are packaged as OCI artifacts (`ociRef`) in an internal registry like Harbor. For VKS worker nodes to pull these artifacts, a Kubernetes secret of type `kubernetes.io/dockerconfigjson` must exist in the target namespace.
+
+`k8s_manager.py` automatically generates and applies this secret manifest from registry credentials:
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harbor-registry-secret
+  namespace: default
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: <base64-encoded-docker-auth>
+```
+`ModelEndpoint` resources reference this secret via `spec.model.pullSecrets: [{ name: "harbor-registry-secret" }]`.
+
+### 2.3 PAIS REST API Data Plane Authentication
+
+For Data Sources, Knowledge Bases, MCP Servers, and Agents, `pais_client.py` uses OpenID Connect (OIDC) Resource Owner Password Flow against the IdP endpoint configured in `PAIS_TOKEN_URL`.
+
+---
+
+## 3. Key Capabilities
 
 - **Automated Model Endpoint Deployment**: Deploy vLLM or Infinity model servers with dedicated vGPU classes (`nvidia-a10g-gpu-class`), vSAN storage, and custom engine parameters (`--gpu-memory-utilization`, `--max-model-len`).
 - **Inference Gateway Route Management**: Automatically expose models via Gateway routes or connect to external cloud models smoothly.
+- **Automated Login & Pull Secret Management**: Handles cluster authentication (`kubectl vsphere login` or Kubeconfig) and OCI model pull secrets (`harbor-registry-secret`) automatically.
 - **RAG & Agent Builder**: Pair deployed embedding models (`Infinity`) with Knowledge Bases and pair deployed LLMs (`vLLM`) with Agents.
 - **Idempotent Reconciler**: Re-running pipelines against unchanged configs performs no duplicate creations.
 - **Diff-Based Cleanup**: Deleting a `model_endpoint`, `inference_route`, `data_source`, `knowledge_base`, `mcp_server`, or `agent` from `config.yaml` automatically deletes the corresponding resource in the cluster/API in safe dependency order.
@@ -82,14 +161,14 @@ VMware Private AI Services (PAIS) operates across two primary planes:
 
 ---
 
-## 3. Repository Layout
+## 4. Repository Layout
 
 ```
 pais-gitops/                           # Repository Root
 ├── .github/
 │   └── workflows/
 │       └── pais-gitops.yml            # CI/CD Reconcile Workflow
-├── k8s_manager.py                     # Kubernetes CRD Generator & kubectl runner
+├── k8s_manager.py                     # K8s Auth, Pull Secrets, CRD Generator & kubectl runner
 ├── pais_client.py                     # PAIS REST API Client, Auth & Helpers
 ├── setup_pais.py                      # GitOps Apply Script (CRDs + REST API)
 ├── cleanup_pais.py                    # GitOps Cleanup Script (Diff-based deletions)
@@ -101,19 +180,38 @@ pais-gitops/                           # Repository Root
 
 ---
 
-## 4. Prerequisites
+## 5. Prerequisites
 
 1. **A PAIS Kubernetes Cluster**: Access to a VKS / vSphere cluster with PAIS installed (`pais.vmware.com/v1alpha1` CRDs registered).
 2. **PAIS OIDC Credentials**: Client ID, Username, Password, Token URL from your PAIS IdP.
-3. **OCI Model Registry**: Harbor or Docker registry storing model OCI artifacts (`ociRef`).
-4. **Python 3.11+** for local dry runs or manual script execution.
-5. **kubectl** (optional for local apply, used automatically in CI if `KUBECONFIG_DATA` secret is provided).
+3. **vSphere / Cluster Credentials or Kubeconfig**: Credentials to authenticate to the K8s API (`VSPHERE_USER`/`PASS` or `KUBECONFIG_DATA`).
+4. **OCI Model Registry Credentials**: Harbor or Docker registry username/password storing model OCI artifacts (`HARBOR_USERNAME`/`PASSWORD`).
+5. **Python 3.11+** for local dry runs or manual script execution.
 
 ---
 
-## 5. The Unified Configuration File (`config.yaml`)
+## 6. The Unified Configuration File (`config.yaml`)
 
-### 5.1 Model Endpoint Deployment (`model_endpoints`)
+```yaml
+kubernetes:
+  namespace: "default"
+
+  # Cluster Login (Optional: if using vSphere SSO login)
+  vsphere:
+    server: "${VSPHERE_SERVER}"
+    username: "${VSPHERE_USER}"
+    password: "${VSPHERE_PASSWORD}"
+    namespace: "${VSPHERE_NAMESPACE}"
+
+  # Harbor / OCI Registry Secret Provisioning
+  registry:
+    server: "${HARBOR_REGISTRY}"
+    username: "${HARBOR_USERNAME}"
+    password: "${HARBOR_PASSWORD}"
+    secret_name: "harbor-registry-secret"
+```
+
+### 6.1 Model Endpoint Deployment (`model_endpoints`)
 
 `ModelEndpoint` defines how an AI model is served on Kubernetes node pools:
 
@@ -131,7 +229,7 @@ model_endpoints:
     model:
       oci_ref: "harbor.internal.example.com/pais/models/meta-llama-3.1-8b-instruct:v1"
       pull_secrets:
-        - name: "harbor-registry-secret"
+        - name: "harbor-registry-secret"   # Auto-created by k8s_manager
     inference_server_customization:
       cli_args:
         - "--max-model-len=8192"
@@ -142,7 +240,7 @@ model_endpoints:
       shared_memory_mount_size: "2Gi"
 ```
 
-### 5.2 Inference Gateway Routing (`inference_routes`)
+### 6.2 Inference Gateway Routing (`inference_routes`)
 
 `InferenceGatewayRoute` maps API client requests to local `ModelEndpoint` services or external providers:
 
@@ -161,7 +259,7 @@ inference_routes:
         verification: "strict"              # strict | caOnly | none | mutual
 ```
 
-### 5.3 Data Sources & Knowledge Bases
+### 6.3 Data Sources & Knowledge Bases
 
 ```yaml
 data_sources:
@@ -186,7 +284,7 @@ knowledge_bases:
       wait_for_indexing: true
 ```
 
-### 5.4 MCP Servers & Tool Approvals
+### 6.4 MCP Servers & Tool Approvals
 
 ```yaml
 mcp_servers:
@@ -198,7 +296,7 @@ mcp_servers:
       - "get_forecast"
 ```
 
-### 5.5 Agent & RAG Configuration
+### 6.5 Agent & RAG Configuration
 
 ```yaml
 agents:
@@ -216,7 +314,7 @@ agents:
 
 ---
 
-## 6. Model Endpoint Operations & Lifecycle Management
+## 7. Model Endpoint Operations & Lifecycle Management
 
 Common Day-2 operations managed via GitOps:
 
@@ -227,7 +325,7 @@ Common Day-2 operations managed via GitOps:
 
 ---
 
-## 7. Secrets and Environment Variables
+## 8. Secrets and Environment Variables
 
 Secret interpolation uses `${ENV_VAR_NAME}` syntax:
 
@@ -238,15 +336,22 @@ Secret interpolation uses `${ENV_VAR_NAME}` syntax:
 | `PAIS_CLIENT_ID` | OIDC Client ID |
 | `PAIS_USERNAME` | OIDC Admin / User Username |
 | `PAIS_PASSWORD` | OIDC Password / Bearer Token |
+| `VSPHERE_SERVER` | vSphere Supervisor Cluster FQDN or IP |
+| `VSPHERE_USER` | vSphere SSO Username |
+| `VSPHERE_PASSWORD` | vSphere SSO Password |
+| `VSPHERE_NAMESPACE` | Target vSphere Namespace |
+| `HARBOR_REGISTRY` | Harbor / OCI Registry FQDN (e.g. `harbor.internal.example.com`) |
+| `HARBOR_USERNAME` | Harbor Registry Username |
+| `HARBOR_PASSWORD` | Harbor Registry Password |
 | `GDRIVE_CREDENTIALS` | Service Account JSON string for Google Drive |
 | `S3_CREDENTIALS` | S3 Access Key / Secret JSON string |
 | `KUBECONFIG_DATA` | (Optional) Base64-encoded Kubeconfig for direct `kubectl apply` |
 
 ---
 
-## 8. Local Execution & Dry Runs
+## 9. Local Execution & Dry Runs
 
-Run local dry runs to preview CRD generation and REST API execution without making live changes:
+Run local dry runs to preview CRD generation, pull secrets, and REST API execution without making live changes:
 
 ```bash
 # 1. Install dependencies
@@ -264,32 +369,40 @@ python cleanup_pais.py --old-config previous_config.yaml --new-config config.yam
 
 ---
 
-## 9. GitHub Secrets & GitOps Pipeline Setup
+## 10. GitHub Secrets & GitOps Pipeline Setup
 
 Add the following Repository Secrets under **Settings ▸ Secrets and variables ▸ Actions**:
 
 ```bash
+# PAIS REST API Secrets
 gh secret set PAIS_BASE_URL      --body "https://pais.example.com"
 gh secret set PAIS_TOKEN_URL     --body "https://idp.example.com/realms/pais/protocol/openid-connect/token"
 gh secret set PAIS_CLIENT_ID     --body "pais-client"
 gh secret set PAIS_USERNAME      --body "admin"
 gh secret set PAIS_PASSWORD      --body "your-password"
-gh secret set GDRIVE_CREDENTIALS --body '{"type":"service_account",...}'
-gh secret set KUBECONFIG_DATA    --body "$(cat ~/.kube/config | base64 -w 0)"
-```
 
-The pipeline automatically runs on pushes to `main` or `21julyupdates` branches.
+# vSphere / Cluster Authentication Secrets
+gh secret set VSPHERE_SERVER     --body "https://vc.domain.local"
+gh secret set VSPHERE_USER       --body "administrator@vsphere.local"
+gh secret set VSPHERE_PASSWORD   --body "your-vsphere-password"
+gh secret set VSPHERE_NAMESPACE  --body "pais-ns"
+
+# OCI Registry Secrets (for pulling model artifacts)
+gh secret set HARBOR_REGISTRY    --body "harbor.internal.example.com"
+gh secret set HARBOR_USERNAME    --body "robot$pais-puller"
+gh secret set HARBOR_PASSWORD    --body "your-harbor-secret"
+```
 
 ---
 
-## 10. End-to-End Walkthrough Example
+## 11. End-to-End Walkthrough Example
 
 1. **Branch Checkout**:
    ```bash
    git checkout -b 21julyupdates
    ```
 
-2. **Update `config.yaml`**: Define new model endpoints, routes, data sources, and agents.
+2. **Update `config.yaml`**: Define new model endpoints, routes, cluster login parameters, data sources, and agents.
 
 3. **Commit and Push**:
    ```bash
@@ -299,7 +412,7 @@ The pipeline automatically runs on pushes to `main` or `21julyupdates` branches.
    ```
 
 4. **GitHub Actions Execution**:
-   - Step 0: Generates `pais.vmware.com/v1alpha1` `ModelEndpoint` and `InferenceGatewayRoute` manifests and applies via `kubectl`.
+   - Step 0: Authenticates to cluster via `kubectl vsphere login` or Kubeconfig, generates `harbor-registry-secret`, builds `pais.vmware.com/v1alpha1` `ModelEndpoint` and `InferenceGatewayRoute` manifests, and applies via `kubectl`.
    - Step 1: Provisions S3 / Google Drive Data Sources.
    - Step 2: Provisions Knowledge Bases and triggers indexing.
    - Step 3-5: Registers MCP Servers and approves tools.
@@ -308,30 +421,32 @@ The pipeline automatically runs on pushes to `main` or `21julyupdates` branches.
 
 ---
 
-## 11. Reconciliation & Removal Logic
+## 12. Reconciliation & Removal Logic
 
 - **Ordering**:
-  - **Apply Phase**: K8s CRDs (ModelEndpoints & GatewayRoutes) ➔ Data Sources ➔ Knowledge Bases & Indexes ➔ MCP Servers ➔ Tool Approvals ➔ Agents.
+  - **Apply Phase**: K8s Cluster Login ➔ Registry Secret Provisioning ➔ K8s CRDs (ModelEndpoints & GatewayRoutes) ➔ Data Sources ➔ Knowledge Bases & Indexes ➔ MCP Servers ➔ Tool Approvals ➔ Agents.
   - **Cleanup Phase**: Agents ➔ Tool Approval Revocation ➔ Knowledge Base Links ➔ Knowledge Bases ➔ MCP Servers ➔ Data Sources ➔ K8s CRDs (GatewayRoutes & ModelEndpoints).
 - **CRD Diffing**: Objects are matched by `metadata.name`. Deleting an item from `config.yaml` triggers a targeted `kubectl delete` command.
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 | Issue | Resolution |
 | --- | --- |
-| `kubectl: command not found` in CI | Supply `KUBECONFIG_DATA` secret in GitHub secrets to enable cluster interaction. Otherwise, inspect the uploaded `k8s-manifests/pais-resources.yaml` build artifact. |
+| `kubectl vsphere login` fails | Ensure `VSPHERE_SERVER`, `VSPHERE_USER`, and `VSPHERE_PASSWORD` secrets are correct, and the `kubectl-vsphere` CLI plugin is installed on the runner. |
+| ModelEndpoint status `ImagePullBackOff` | Verify `harbor-registry-secret` creation. Ensure `HARBOR_REGISTRY`, `HARBOR_USERNAME`, and `HARBOR_PASSWORD` are valid and the user has pull permissions on the OCI repository. |
 | ModelEndpoint status `Pending` | Check node pool vGPU availability (`virtualMachineClassName`) or vSphere Zone (`failureDomain`). |
-| OCI Image Pull Error | Ensure `pullSecrets` matches a valid Kubernetes secret containing registry credentials for Harbor/Docker. |
 | Agent return code 404 on Model | Verify that the `routing_name` in `ModelEndpoint` matches the `matches.routing_name` in `InferenceGatewayRoute`. |
 
 ---
 
-## 13. CRD & REST API Reference Matrix
+## 14. CRD & REST API Reference Matrix
 
 | Capability | Resource Kind / API Path | API Group / Endpoint |
 | --- | --- | --- |
+| Cluster Login | `kubectl vsphere login` | vSphere Supervisor SSO |
+| Registry Pull Secret | `Secret` (`dockerconfigjson`) | `core/v1` |
 | Model Endpoint | `ModelEndpoint` | `pais.vmware.com/v1alpha1` |
 | Gateway Routing | `InferenceGatewayRoute` | `pais.vmware.com/v1alpha1` |
 | Data Source | REST Data Source | `/api/v1/control/data-sources` |

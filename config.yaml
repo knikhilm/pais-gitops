@@ -23,6 +23,26 @@ pais:
 kubernetes:
   namespace: "default"                      # Default K8s namespace for CRDs
 
+  # ----------------------------------------------------------
+  # Kubernetes Cluster Authentication & Login Options
+  # ----------------------------------------------------------
+  # Method 1: vSphere with Tanzu Login (kubectl vsphere login)
+  # Uses vSphere SSO credentials to authenticate to the Supervisor / VKS Cluster
+  vsphere:
+    server: "${VSPHERE_SERVER}"             # e.g. https://192.168.1.100 or vc.domain.local
+    username: "${VSPHERE_USER}"             # e.g. administrator@vsphere.local
+    password: "${VSPHERE_PASSWORD}"
+    namespace: "${VSPHERE_NAMESPACE}"
+
+  # Method 2: OCI / Harbor Registry Pull Secret Provisioning
+  # Automatically creates a kubernetes.io/dockerconfigjson Secret in the namespace
+  # so VKS worker nodes can pull OCI model artifacts (oci_ref) from Harbor
+  registry:
+    server: "${HARBOR_REGISTRY}"            # e.g. harbor.internal.example.com
+    username: "${HARBOR_USERNAME}"
+    password: "${HARBOR_PASSWORD}"
+    secret_name: "harbor-registry-secret"
+
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (pais.vmware.com/v1alpha1 -> ModelEndpoint)
 # ============================================================

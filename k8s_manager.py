@@ -1,16 +1,23 @@
 """
-Kubernetes Custom Resource Manager for VMware Private AI Services (PAIS).
+Kubernetes Custom Resource & Authentication Manager for VMware Private AI Services (PAIS).
 
-Handles the generation, validation, application, and deletion of Kubernetes CRDs:
-  * ModelEndpoint         (apiGroup: pais.vmware.com/v1alpha1)
-  * InferenceGatewayRoute  (apiGroup: pais.vmware.com/v1alpha1)
-
-Can run via ``kubectl`` CLI if available, or generate standalone Kubernetes
-manifest files suitable for GitOps tools like ArgoCD / Flux or manual kubectl apply.
+Handles:
+  1. Cluster Authentication & Login:
+     - vSphere with Tanzu SSO Login (`kubectl vsphere login`) using vSphere credentials.
+     - Direct ServiceAccount / Bearer Token & Server URL login (`kubectl config set-credentials`).
+     - Kubeconfig environment interpolation (`KUBECONFIG` / `KUBECONFIG_DATA`).
+  2. Image & Registry Secret Provisioning:
+     - Generates `kubernetes.io/dockerconfigjson` Secrets for OCI registries (e.g., Harbor)
+       so VKS node pools can pull model artifacts specified in ModelEndpoints.
+     - Generates `pais.vmware.com/api-token-credentials` Secrets for InferenceGatewayRoute backends.
+  3. Custom Resource Manifest Generation & Reconcile:
+     - ModelEndpoint         (apiGroup: pais.vmware.com/v1alpha1)
+     - InferenceGatewayRoute  (apiGroup: pais.vmware.com/v1alpha1)
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -24,7 +31,159 @@ log = logging.getLogger("pais.k8s")
 
 
 # ---------------------------------------------------------------------------
-# CRD Manifest Builders
+# 1. Cluster Authentication & Login Helpers
+# ---------------------------------------------------------------------------
+
+def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
+    """
+    Attempt to log into the target Kubernetes cluster (vSphere Supervisor/VKS or standard K8s).
+
+    Tries in order:
+      1. vSphere SSO login (`kubectl vsphere login`) if vSphere credentials exist.
+      2. ServiceAccount / Bearer token login if KUBE_SERVER and KUBE_TOKEN exist.
+      3. Existing active kubeconfig context.
+    """
+    if dry_run:
+        log.info("  [dry-run] K8s authentication check completed (skipped actual login).")
+        return True
+
+    k8s_cfg = config.get("kubernetes", {})
+    vsphere_cfg = k8s_cfg.get("vsphere", {})
+
+    # Method 1: vSphere with Tanzu Login (kubectl vsphere login)
+    v_server = os.environ.get("VSPHERE_SERVER", vsphere_cfg.get("server", ""))
+    v_user = os.environ.get("VSPHERE_USER", vsphere_cfg.get("username", ""))
+    v_pass = os.environ.get("VSPHERE_PASSWORD", vsphere_cfg.get("password", ""))
+    v_namespace = os.environ.get("VSPHERE_NAMESPACE", vsphere_cfg.get("namespace", k8s_cfg.get("namespace", "default")))
+
+    if v_server and v_user and v_pass:
+        log.info("Authenticating to vSphere Supervisor Cluster at %s via 'kubectl vsphere login'...", v_server)
+        cmd = [
+            "kubectl", "vsphere", "login",
+            f"--server={v_server}",
+            f"--vsphere-username={v_user}",
+            f"--vsphere-password={v_pass}",
+            f"--tanzu-kubernetes-cluster-namespace={v_namespace}",
+            "--insecure-skip-tls-verify",
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            log.info("vSphere login successful: %s", res.stdout.strip())
+            return True
+        except Exception as exc:
+            log.warning("vSphere login failed: %s. Falling back to default kubeconfig...", exc)
+
+    # Method 2: ServiceAccount / Bearer Token Login
+    k_server = os.environ.get("KUBE_SERVER", k8s_cfg.get("server", ""))
+    k_token = os.environ.get("KUBE_TOKEN", k8s_cfg.get("token", ""))
+    k_ns = os.environ.get("KUBE_NAMESPACE", k8s_cfg.get("namespace", "default"))
+
+    if k_server and k_token:
+        log.info("Authenticating to K8s cluster at %s via ServiceAccount bearer token...", k_server)
+        try:
+            subprocess.run(["kubectl", "config", "set-cluster", "pais-cluster", f"--server={k_server}", "--insecure-skip-tls-verify=true"], check=True, capture_output=True)
+            subprocess.run(["kubectl", "config", "set-credentials", "pais-sa", f"--token={k_token}"], check=True, capture_output=True)
+            subprocess.run(["kubectl", "config", "set-context", "pais-context", "--cluster=pais-cluster", "--user=pais-sa", f"--namespace={k_ns}"], check=True, capture_output=True)
+            subprocess.run(["kubectl", "config", "use-context", "pais-context"], check=True, capture_output=True)
+            log.info("ServiceAccount K8s authentication context set successfully.")
+            return True
+        except Exception as exc:
+            log.warning("ServiceAccount token login failed: %s. Falling back to default context...", exc)
+
+    # Method 3: Existing active kubectl context
+    if _is_kubectl_available():
+        try:
+            res = subprocess.run(["kubectl", "config", "current-context"], capture_output=True, text=True, check=True)
+            log.info("Using active Kubernetes context: '%s'", res.stdout.strip())
+            return True
+        except Exception:
+            pass
+
+    log.warning("No active Kubernetes authentication configured. Manifests will be output to file.")
+    return False
+
+
+# ---------------------------------------------------------------------------
+# 2. Secret Provisioning Builders (Image Pull & Backend API Tokens)
+# ---------------------------------------------------------------------------
+
+def build_docker_registry_secret(registry_cfg: dict, default_namespace: str = "default") -> dict[str, Any] | None:
+    """
+    Generate a Kubernetes secret of type `kubernetes.io/dockerconfigjson`
+    used by VKS node pools to pull OCI model artifacts from Harbor/registries.
+    """
+    server = os.environ.get("HARBOR_REGISTRY", os.environ.get("REGISTRY_SERVER", registry_cfg.get("server", "")))
+    user = os.environ.get("HARBOR_USERNAME", os.environ.get("REGISTRY_USERNAME", registry_cfg.get("username", "")))
+    password = os.environ.get("HARBOR_PASSWORD", os.environ.get("REGISTRY_PASSWORD", registry_cfg.get("password", "")))
+    secret_name = registry_cfg.get("secret_name", "harbor-registry-secret")
+    namespace = registry_cfg.get("namespace", default_namespace)
+
+    if not server or not user or not password:
+        return None
+
+    auth_str = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("utf-8")
+    docker_config = {
+        "auths": {
+            server: {
+                "username": user,
+                "password": password,
+                "auth": auth_str,
+            }
+        }
+    }
+    docker_json = json.dumps(docker_config)
+    encoded_docker_json = base64.b64encode(docker_json.encode("utf-8")).decode("utf-8")
+
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": secret_name,
+            "namespace": namespace,
+            "labels": {
+                "app.kubernetes.io/managed-by": "pais-gitops",
+            },
+        },
+        "type": "kubernetes.io/dockerconfigjson",
+        "data": {
+            ".dockerconfigjson": encoded_docker_json,
+        },
+    }
+
+
+def build_api_token_secret(token_cfg: dict, default_namespace: str = "default") -> dict[str, Any] | None:
+    """
+    Generate a Kubernetes secret of type `pais.vmware.com/api-token-credentials`
+    used by InferenceGatewayRoute backend authentication.
+    """
+    name = token_cfg.get("name")
+    api_token = os.environ.get(token_cfg.get("env_var", ""), token_cfg.get("api_token", ""))
+    namespace = token_cfg.get("namespace", default_namespace)
+
+    if not name or not api_token:
+        return None
+
+    encoded_token = base64.b64encode(api_token.encode("utf-8")).decode("utf-8")
+
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": {
+                "app.kubernetes.io/managed-by": "pais-gitops",
+            },
+        },
+        "type": "pais.vmware.com/api-token-credentials",
+        "data": {
+            "api_token": encoded_token,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# 3. CRD Manifest Builders
 # ---------------------------------------------------------------------------
 
 def build_model_endpoint_crd(endpoint_cfg: dict, default_namespace: str = "default") -> dict[str, Any]:
@@ -135,21 +294,34 @@ def build_inference_gateway_route_crd(route_cfg: dict, default_namespace: str = 
 
 
 # ---------------------------------------------------------------------------
-# Manifest Export
+# 4. Manifest Generation & File Export
 # ---------------------------------------------------------------------------
 
 def generate_k8s_manifests(config: dict) -> list[dict[str, Any]]:
     """
-    Build all ModelEndpoint and InferenceGatewayRoute objects from config.
+    Build all Kubernetes manifests (Secrets, ModelEndpoints, InferenceGatewayRoutes).
     """
     k8s_cfg = config.get("kubernetes", {})
     default_ns = k8s_cfg.get("namespace", "default")
 
     manifests: list[dict[str, Any]] = []
 
+    # 1. Registry Secrets (dockerconfigjson)
+    reg_secret = build_docker_registry_secret(k8s_cfg.get("registry", {}), default_namespace=default_ns)
+    if reg_secret:
+        manifests.append(reg_secret)
+
+    # 2. API Token Secrets (pais.vmware.com/api-token-credentials)
+    for token_cfg in k8s_cfg.get("api_tokens", []):
+        tok_secret = build_api_token_secret(token_cfg, default_namespace=default_ns)
+        if tok_secret:
+            manifests.append(tok_secret)
+
+    # 3. ModelEndpoints
     for me in config.get("model_endpoints", []):
         manifests.append(build_model_endpoint_crd(me, default_namespace=default_ns))
 
+    # 4. InferenceGatewayRoutes
     for ir in config.get("inference_routes", []):
         manifests.append(build_inference_gateway_route_crd(ir, default_namespace=default_ns))
 
@@ -167,12 +339,12 @@ def write_manifests_file(manifests: list[dict[str, Any]], output_path: str) -> N
 
 
 # ---------------------------------------------------------------------------
-# Kubectl Execution
+# 5. Kubectl Execution
 # ---------------------------------------------------------------------------
 
-def apply_k8s_manifests(manifests: list[dict[str, Any]], dry_run: bool = False) -> None:
+def apply_k8s_manifests(config: dict, manifests: list[dict[str, Any]], dry_run: bool = False) -> None:
     """
-    Apply Kubernetes CRD manifests using `kubectl apply` if available.
+    Authenticate and apply Kubernetes manifests via `kubectl apply`.
     """
     if not manifests:
         log.info("No Kubernetes ModelEndpoint or InferenceGatewayRoute resources defined.")
@@ -186,11 +358,12 @@ def apply_k8s_manifests(manifests: list[dict[str, Any]], dry_run: bool = False) 
             log.info("  %s", line)
         return
 
-    # Check if kubectl is available
-    if not _is_kubectl_available():
+    # Cluster Authentication
+    authenticated = authenticate_k8s_cluster(config, dry_run=dry_run)
+    if not authenticated or not _is_kubectl_available():
         log.warning(
-            "kubectl command is not available in environment. Skipping direct cluster apply. "
-            "Manifests have been saved to disk for GitOps/manual deployment."
+            "kubectl is not authenticated or not available. Skipping direct cluster apply. "
+            "Manifests have been saved to disk in k8s-manifests/ for GitOps/manual deployment."
         )
         return
 
@@ -223,6 +396,10 @@ def delete_removed_k8s_resources(old_config: dict, new_config: dict, dry_run: bo
     if not removed_endpoints and not removed_routes:
         log.info("No Kubernetes ModelEndpoints or InferenceGatewayRoutes removed.")
         return
+
+    # Authenticate before deletion
+    if not dry_run:
+        authenticate_k8s_cluster(new_config, dry_run=dry_run)
 
     default_ns = new_config.get("kubernetes", {}).get("namespace", "default")
 

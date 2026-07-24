@@ -56,7 +56,7 @@ def apply_kubernetes_resources(config: dict, dry_run: bool, manifests_out_dir: s
     if manifests:
         out_file = os.path.join(manifests_out_dir, "pais-resources.yaml")
         km.write_manifests_file(manifests, out_file)
-        km.apply_k8s_manifests(manifests, dry_run=dry_run)
+        km.apply_k8s_manifests(config, manifests, dry_run=dry_run)
     else:
         log.info("  No Kubernetes ModelEndpoints or InferenceGatewayRoutes configured in config.")
 
