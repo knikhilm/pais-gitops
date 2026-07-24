@@ -402,7 +402,16 @@ class PAISClient:
     ) -> None:
         self._base = base_url.rstrip("/")
         self._offline = offline
-        self._client = None if offline else httpx.Client(auth=auth, verify=verify_ssl, timeout=60)
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "PAIS-GitOps-Client/1.0",
+        }
+        self._client = None if offline else httpx.Client(
+            auth=auth,
+            headers=headers,
+            verify=verify_ssl,
+            timeout=60,
+        )
 
     @classmethod
     def offline(cls, base_url: str) -> "PAISClient":
