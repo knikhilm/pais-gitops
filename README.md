@@ -358,7 +358,8 @@ Secret interpolation uses `${ENV_VAR_NAME}` syntax:
 | `PAIS_CLIENT_SECRET` | (Optional) OIDC Client Secret (for confidential clients) |
 | `PAIS_SCOPE` | (Optional) OIDC Scope (leave blank if default scope used) |
 | `PAIS_USERNAME` | OIDC Admin / User Username |
-| `PAIS_PASSWORD` | OIDC Password / Bearer Token |
+| `PAIS_PASSWORD` | OIDC Password |
+| `PAIS_TOKEN` | (Optional) Pre-created Authentik / OIDC Bearer Token (bypasses password login) |
 | `VCF_ENDPOINT` / `VSPHERE_SERVER` | VCF Supervisor Cluster FQDN or IP |
 | `VCF_USER` / `VSPHERE_USER` | VCF / vSphere Username |
 | `VCF_PASSWORD` / `VSPHERE_PASSWORD` | VCF / vSphere Password |

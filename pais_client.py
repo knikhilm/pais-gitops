@@ -90,7 +90,7 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     secrets without committing them to git:
 
       PAIS_BASE_URL, PAIS_TOKEN_URL, PAIS_CLIENT_ID, PAIS_CLIENT_SECRET,
-      PAIS_SCOPE, PAIS_USERNAME, PAIS_PASSWORD, PAIS_VERIFY_SSL
+      PAIS_SCOPE, PAIS_USERNAME, PAIS_PASSWORD, PAIS_TOKEN, PAIS_VERIFY_SSL
 
     Returns (base_url, auth_dict, verify_ssl).
     """
@@ -99,6 +99,8 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     base_url = os.environ.get("PAIS_BASE_URL", pais_cfg.get("base_url", ""))
 
     env_overrides = {
+        "token": "PAIS_TOKEN",
+        "api_token": "PAIS_API_TOKEN",
         "token_url": "PAIS_TOKEN_URL",
         "client_id": "PAIS_CLIENT_ID",
         "client_secret": "PAIS_CLIENT_SECRET",
@@ -124,11 +126,22 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     return base_url, auth_cfg, bool(verify_ssl)
 
 
+class BearerAuth(httpx.Auth):
+    """Static Bearer / API Token Auth for httpx."""
+
+    def __init__(self, token: str) -> None:
+        self.token = token.strip()
+
+    def auth_flow(self, request: httpx.Request):
+        request.headers["Authorization"] = f"Bearer {self.token}"
+        yield request
+
+
 class OAuth2PasswordAuth(httpx.Auth):
     """
     Custom OAuth2 Resource Owner Password Credentials Auth for httpx.
-    Obtains and automatically refreshes Bearer tokens while strictly respecting `verify_ssl`.
-    Compatible with public & confidential OIDC clients (Authentik, Keycloak, Okta, etc.).
+    Obtains and automatically refreshes Bearer tokens using username & password.
+    Compatible with Authentik, Keycloak, Okta, and generic OIDC providers.
     """
 
     def __init__(
@@ -151,36 +164,71 @@ class OAuth2PasswordAuth(httpx.Auth):
         self._access_token: str | None = None
 
     def _fetch_token(self) -> str:
-        data: dict[str, str] = {
+        # Attempt 1: OIDC Resource Owner Password Flow (grant_type=password)
+        data1: dict[str, str] = {
             "grant_type": "password",
             "client_id": self.client_id,
             "username": self.username,
             "password": self.password,
         }
         if self.client_secret:
-            data["client_secret"] = self.client_secret
+            data1["client_secret"] = self.client_secret
         if self.scope:
-            data["scope"] = self.scope
+            data1["scope"] = self.scope
 
         with httpx.Client(verify=self.verify_ssl, timeout=30) as client:
-            resp = client.post(self.token_url, data=data)
-            if resp.is_error:
-                log.error("OIDC Token fetch from '%s' failed [%d]: %s", self.token_url, resp.status_code, resp.text)
+            resp = client.post(self.token_url, data=data1)
+            if resp.status_code == 200:
+                token_data = resp.json()
+                token = token_data.get("access_token") or token_data.get("token")
+                if token:
+                    return token
+
+            # Attempt 2: If Attempt 1 failed and scope/secret was included, retry clean payload
+            if (self.scope or self.client_secret) and resp.is_error:
+                log.info("OIDC token fetch attempt 1 failed [%d]. Retrying with clean payload...", resp.status_code)
+                data2 = {
+                    "grant_type": "password",
+                    "client_id": self.client_id,
+                    "username": self.username,
+                    "password": self.password,
+                }
+                resp2 = client.post(self.token_url, data=data2)
+                if resp2.status_code == 200:
+                    token_data = resp2.json()
+                    token = token_data.get("access_token") or token_data.get("token")
+                    if token:
+                        return token
+                resp = resp2
+
+            # Attempt 3: Authentik REST API token login (if token_url is Authentik REST API)
+            if "/api/" in self.token_url and resp.is_error:
+                log.info("Attempting Authentik REST API token login payload...")
+                json_data = {"username": self.username, "password": self.password}
+                resp3 = client.post(self.token_url, json=json_data)
+                if resp3.status_code in (200, 201):
+                    token_data = resp3.json()
+                    token = token_data.get("token") or token_data.get("access_token") or token_data.get("key")
+                    if token:
+                        return token
+                resp = resp3
+
+            log.error("OIDC/Authentik Token fetch from '%s' failed [%d]: %s", self.token_url, resp.status_code, resp.text)
+            log.error(
+                "OIDC Params: grant_type='password', client_id='%s', username='%s', client_secret_provided=%s, scope='%s'",
+                self.client_id, self.username, bool(self.client_secret), self.scope or ""
+            )
+            if "invalid_grant" in resp.text.lower():
                 log.error(
-                    "OIDC Params: grant_type='password', client_id='%s', username='%s', client_secret_provided=%s, scope='%s'",
-                    self.client_id, self.username, bool(self.client_secret), self.scope or ""
+                    "Troubleshooting Authentik / OIDC 'invalid_grant':\n"
+                    "  1. Verify PAIS_USERNAME and PAIS_PASSWORD in GitHub Secrets are correct.\n"
+                    "  2. In Authentik, ensure 'Direct Access Grants' (Resource Owner Password Flow) is enabled on the Provider.\n"
+                    "  3. Verify PAIS_CLIENT_ID matches the Authentik OAuth2 Provider client_id.\n"
+                    "  4. Alternatively, generate a static Authentik API Token and set 'PAIS_TOKEN' in GitHub Secrets."
                 )
-                if "invalid_grant" in resp.text.lower():
-                    log.error(
-                        "Troubleshooting Authentik / OIDC 'invalid_grant':\n"
-                        "  1. Verify PAIS_USERNAME and PAIS_PASSWORD in GitHub Secrets are correct.\n"
-                        "  2. In Authentik, ensure 'Direct Access Grants' (Resource Owner Password Flow) is enabled on the Provider.\n"
-                        "  3. Verify PAIS_CLIENT_ID matches the Authentik OAuth2 Provider client_id.\n"
-                        "  4. Ensure the user account is active in Authentik and does not require MFA."
-                    )
             resp.raise_for_status()
             token_data = resp.json()
-            token = token_data.get("access_token")
+            token = token_data.get("access_token") or token_data.get("token")
             if not token:
                 raise ValueError(f"No access_token returned by {self.token_url}: {resp.text}")
             return token
@@ -196,12 +244,25 @@ class OAuth2PasswordAuth(httpx.Auth):
             yield request
 
 
-def build_auth(auth_cfg: dict, verify_ssl: bool = True) -> OAuth2PasswordAuth:
-    """Build an OIDC Resource-Owner-Password auth handler from config."""
+def build_auth(auth_cfg: dict, verify_ssl: bool = True) -> httpx.Auth:
+    """Build an auth handler (Static Bearer Token or OAuth2 Resource Owner Password) from config."""
+    static_token = (
+        auth_cfg.get("token") or
+        auth_cfg.get("api_token") or
+        os.environ.get("PAIS_TOKEN") or
+        os.environ.get("PAIS_API_TOKEN")
+    )
+    if static_token and static_token.strip():
+        log.info("Using static Bearer/API token for PAIS authentication.")
+        return BearerAuth(static_token.strip())
+
     required = ("token_url", "client_id", "username", "password")
     missing = [k for k in required if not auth_cfg.get(k)]
     if missing:
-        raise ValueError(f"Missing required auth settings: {', '.join(missing)}")
+        raise ValueError(
+            f"Missing required auth settings: {', '.join(missing)}. "
+            "Provide PAIS_TOKEN_URL, PAIS_CLIENT_ID, PAIS_USERNAME, PAIS_PASSWORD, or PAIS_TOKEN."
+        )
 
     return OAuth2PasswordAuth(
         token_url=auth_cfg["token_url"],

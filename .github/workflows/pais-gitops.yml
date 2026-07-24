@@ -44,6 +44,7 @@ jobs:
       PAIS_CLIENT_SECRET: ${{ secrets.PAIS_CLIENT_SECRET }}
       PAIS_USERNAME: ${{ secrets.PAIS_USERNAME }}
       PAIS_PASSWORD: ${{ secrets.PAIS_PASSWORD }}
+      PAIS_TOKEN: ${{ secrets.PAIS_TOKEN }}
       PAIS_SCOPE: ${{ secrets.PAIS_SCOPE }}
       PAIS_VERIFY_SSL: ${{ secrets.PAIS_VERIFY_SSL || 'false' }}
       # --- Data-source credentials referenced as ${...} in config.yaml ---
