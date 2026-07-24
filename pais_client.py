@@ -207,15 +207,20 @@ class OAuth2PasswordAuth(httpx.Auth):
         self._active_token: str | None = None
         self._token_candidates: list[str] = []
 
-    def _generate_authentik_app_password(self, base_url: str) -> str | None:
+    def _generate_authentik_tokens(self, base_url: str) -> tuple[str | None, str | None]:
         """
-        Programmatic App Password Generation via Authentik Flow & Core API.
-        Executes the 6-step Authentik authentication flow to generate a non-expiring App Password key
-        using user credentials when direct password grant is rejected.
+        Programmatic Token Generation via Authentik Flow & Core API.
+        Executes the Authentik authentication flow to generate:
+          1. Authentik API Token (intent='api')
+          2. Authentik App Password (intent='app_password')
+        Returns (api_token_key, app_password_key).
         """
         import uuid
         base_authentik_url = base_url.rstrip("/")
-        log.info("Executing 6-step Authentik Flow Executor API to generate App Password at '%s'...", base_authentik_url)
+        log.info("Executing Authentik Flow Executor & Core API to generate API Token and App Password at '%s'...", base_authentik_url)
+
+        api_token_key: str | None = None
+        app_password_key: str | None = None
 
         with httpx.Client(verify=self.verify_ssl, follow_redirects=True, timeout=30) as session:
             try:
@@ -224,10 +229,9 @@ class OAuth2PasswordAuth(httpx.Auth):
                 r1 = session.get(flow_url)
                 if r1.is_error:
                     log.warning("  Authentik Step 1 (init flow) failed [%d]: %s", r1.status_code, r1.text)
-                    return None
+                    return None, None
 
                 csrf_token = session.cookies.get("authentik_csrf") or session.cookies.get("csrftoken") or ""
-
                 headers = {
                     "Content-Type": "application/json",
                     "Referer": f"{base_authentik_url}/",
@@ -239,7 +243,7 @@ class OAuth2PasswordAuth(httpx.Auth):
                 r2 = session.post(flow_url, json={"uid_field": self.username}, headers=headers)
                 if r2.is_error:
                     log.warning("  Authentik Step 2 (submit username) failed [%d]: %s", r2.status_code, r2.text)
-                    return None
+                    return None, None
 
                 csrf_token = session.cookies.get("authentik_csrf") or session.cookies.get("csrftoken") or csrf_token
                 if csrf_token:
@@ -249,7 +253,7 @@ class OAuth2PasswordAuth(httpx.Auth):
                 r3 = session.post(flow_url, json={"password": self.password}, headers=headers)
                 if r3.is_error:
                     log.warning("  Authentik Step 3 (submit password) failed [%d]: %s", r3.status_code, r3.text)
-                    return None
+                    return None, None
 
                 csrf_token = session.cookies.get("authentik_csrf") or session.cookies.get("csrftoken") or csrf_token
                 if csrf_token:
@@ -260,47 +264,63 @@ class OAuth2PasswordAuth(httpx.Auth):
                 r4 = session.get(me_url, headers=headers)
                 if r4.is_error:
                     log.warning("  Authentik Step 4 (get user pk) failed [%d]: %s", r4.status_code, r4.text)
-                    return None
+                    return None, None
 
                 user_pk = r4.json().get("user", {}).get("pk")
                 if not user_pk:
                     log.warning("  Authentik Step 4 failed: 'pk' not found in response: %s", r4.text)
-                    return None
+                    return None, None
 
-                # Step 5: Create App Password Token
-                token_identifier = f"pais-app-pwd-{uuid.uuid4().hex[:8]}"
                 tokens_url = f"{base_authentik_url}/api/v3/core/tokens/"
-                token_payload = {
-                    "identifier": token_identifier,
-                    "intent": "app_password",
-                    "user": user_pk,
-                    "expiring": False,
-                }
-                r5 = session.post(tokens_url, json=token_payload, headers=headers)
-                if r5.is_error and r5.status_code != 201:
-                    log.warning("  Authentik Step 5 (create app password) failed [%d]: %s", r5.status_code, r5.text)
-                    return None
 
-                # Step 6: View the Generated App Password Key
-                view_key_url = f"{base_authentik_url}/api/v3/core/tokens/{token_identifier}/view_key/"
-                r6 = session.get(view_key_url, headers=headers)
-                if r6.is_error:
-                    log.warning("  Authentik Step 6 (view key) failed [%d]: %s", r6.status_code, r6.text)
-                    return None
+                # Step 5a: Create API Token (intent='api')
+                api_tok_id = f"pais-api-tok-{uuid.uuid4().hex[:8]}"
+                r5a = session.post(
+                    tokens_url,
+                    json={
+                        "identifier": api_tok_id,
+                        "intent": "api",
+                        "user": user_pk,
+                        "expiring": False,
+                        "description": "PAIS GitOps API Token",
+                    },
+                    headers=headers,
+                )
+                if r5a.status_code in (200, 201):
+                    r6a = session.get(f"{tokens_url}{api_tok_id}/view_key/", headers=headers)
+                    if r6a.status_code == 200:
+                        api_token_key = r6a.json().get("key")
+                        log.info("  Successfully generated Authentik API Token (intent='api')!")
 
-                app_key = r6.json().get("key")
-                if app_key:
-                    log.info("  Successfully generated Authentik App Password key via 6-step flow API!")
-                    return app_key
+                # Step 5b: Create App Password Token (intent='app_password')
+                app_tok_id = f"pais-app-pwd-{uuid.uuid4().hex[:8]}"
+                r5b = session.post(
+                    tokens_url,
+                    json={
+                        "identifier": app_tok_id,
+                        "intent": "app_password",
+                        "user": user_pk,
+                        "expiring": False,
+                        "description": "PAIS GitOps App Password",
+                    },
+                    headers=headers,
+                )
+                if r5b.status_code in (200, 201):
+                    r6b = session.get(f"{tokens_url}{app_tok_id}/view_key/", headers=headers)
+                    if r6b.status_code == 200:
+                        app_password_key = r6b.json().get("key")
+                        log.info("  Successfully generated Authentik App Password (intent='app_password')!")
+
             except Exception as exc:
-                log.warning("  Authentik 6-step flow exception: %s", exc)
+                log.warning("  Authentik Flow Exception: %s", exc)
 
-        return None
+        return api_token_key, app_password_key
 
     def _fetch_token(self) -> str:
         req_scope = self.scope or "openid groups offline_access"
         self._token_candidates = []
         token_data: dict[str, Any] = {}
+        api_token_key: str | None = None
         app_password_key: str | None = None
 
         with httpx.Client(verify=self.verify_ssl, timeout=30) as client:
@@ -332,15 +352,13 @@ class OAuth2PasswordAuth(httpx.Auth):
                 if resp_cc.status_code == 200:
                     token_data = resp_cc.json()
 
-            # --- Strategy 3: 6-Step Programmatic Authentik App Password Flow ---
-            if not token_data and ("/application/o/" in self.token_url or "/api/v3/" in self.token_url):
+            # --- Strategy 3: Authentik API Token & App Password Flow ---
+            if "/application/o/" in self.token_url or "/api/v3/" in self.token_url:
                 base_auth_url = self.token_url.split("/application/o/")[0].split("/api/v3/")[0]
-                app_password_key = self._generate_authentik_app_password(base_auth_url)
-                if app_password_key:
-                    # Priority 1: Add the created Authentik API token key directly as a candidate!
-                    self._token_candidates.append(app_password_key)
+                api_token_key, app_password_key = self._generate_authentik_tokens(base_auth_url)
 
-                    # Exchange generated App Password Key at OIDC Token Endpoint
+                # Exchange generated App Password Key at OIDC Token Endpoint if needed
+                if not token_data and app_password_key:
                     log.info("Exchanging generated Authentik App Password key at OIDC token endpoint...")
                     data_app = {
                         "grant_type": "password",
@@ -357,32 +375,43 @@ class OAuth2PasswordAuth(httpx.Auth):
                         token_data = resp_app.json()
 
             # --- Strategy 4: Clean OIDC Form POST without scope ---
-            if not token_data and not app_password_key:
+            if not token_data:
                 log.info("Trying clean OIDC form payload...")
                 data_clean = {
                     "grant_type": "password",
                     "client_id": self.client_id,
                     "username": self.username,
-                    "password": self.password,
+                    "password": app_password_key or self.password,
                 }
                 resp_clean = client.post(self.token_url, data=data_clean)
                 if resp_clean.status_code == 200:
                     token_data = resp_clean.json()
 
-            # Collect token candidates from OIDC JSON response if present
+            # --- Assemble token candidates in priority order ---
+            # 1. OIDC access_token (JWT signed by Authentik)
             if token_data:
                 access_tok = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
-                id_tok = token_data.get("id_token")
                 if access_tok and access_tok not in self._token_candidates:
                     self._token_candidates.append(access_tok)
+
+            # 2. Authentik API Token (intent='api', format e.g. ak_...)
+            if api_token_key and api_token_key not in self._token_candidates:
+                self._token_candidates.append(api_token_key)
+
+            # 3. Authentik App Password Key (intent='app_password')
+            if app_password_key and app_password_key not in self._token_candidates:
+                self._token_candidates.append(app_password_key)
+
+            # 4. OIDC id_token
+            if token_data:
+                id_tok = token_data.get("id_token")
                 if id_tok and id_tok not in self._token_candidates:
                     self._token_candidates.append(id_tok)
 
             if not self._token_candidates:
-                log.error("OIDC Token fetch from '%s' failed [%d]: %s", self.token_url, resp1.status_code, resp1.text)
-                resp1.raise_for_status()
+                log.error("Token fetch failed. Response: %s", resp1.text if 'resp1' in locals() else "No response")
+                raise RuntimeError("Failed to acquire any authentication token from Authentik.")
 
-            # Active token defaults to candidate 0 (the created API token key or access_token)
             self._active_token = self._token_candidates[0]
 
             log.info("Acquired %d Bearer token candidate(s). Active token len=%d",
@@ -397,7 +426,7 @@ class OAuth2PasswordAuth(httpx.Auth):
                              claims.get("groups") or claims.get("roles"),
                              claims.get("scope"))
                 else:
-                    log.info("  Candidate [%d]: Opaque token / App Password Key (len=%d)", idx, len(cand))
+                    log.info("  Candidate [%d]: Opaque token / Authentik API Key (len=%d)", idx, len(cand))
 
             return self._active_token
 
@@ -410,17 +439,21 @@ class OAuth2PasswordAuth(httpx.Auth):
 
         # If 401 or 403 occurs, iterate over alternative token candidates
         if response.status_code in (401, 403) and len(self._token_candidates) > 1:
+            initial_token = self._active_token
             for candidate in list(self._token_candidates):
-                if candidate == self._active_token:
+                if candidate == initial_token:
                     continue
-                log.info("PAIS API returned %d with active token. Retrying with alternative token candidate (len=%d)...",
+                log.info("PAIS API returned %d with active token. Retrying with candidate token (len=%d)...",
                          response.status_code, len(candidate))
                 self._active_token = candidate
                 request.headers["Authorization"] = f"Bearer {self._active_token}"
                 response = yield request
                 if response.status_code < 400:
                     log.info("Token candidate succeeded with status %d!", response.status_code)
-                    break
+                    return
+
+            # If all candidates failed, restore active token to primary candidate 0 (OIDC access token)
+            self._active_token = self._token_candidates[0]
 
 
 def build_auth(auth_cfg: dict, verify_ssl: bool = True) -> httpx.Auth:
@@ -525,7 +558,7 @@ class PAISClient:
         full_url = self._url(path)
         resp = self._client.get(full_url, **kwargs)
 
-        if resp.status_code in (403, 404) and "/control/" in full_url and "<html" in resp.text.lower():
+        if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
             log.info("GET '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
             resp_fallback = self._client.get(fallback_url, **kwargs)
@@ -540,7 +573,7 @@ class PAISClient:
         full_url = self._url(path)
         resp = self._client.post(full_url, json=json_body, **kwargs)
 
-        if resp.status_code in (403, 404) and "/control/" in full_url and "<html" in resp.text.lower():
+        if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
             log.info("POST '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
             resp_fallback = self._client.post(fallback_url, json=json_body, **kwargs)
@@ -555,7 +588,7 @@ class PAISClient:
         full_url = self._url(path)
         resp = self._client.patch(full_url, json=json_body, **kwargs)
 
-        if resp.status_code in (403, 404) and "/control/" in full_url and "<html" in resp.text.lower():
+        if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
             log.info("PATCH '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
             resp_fallback = self._client.patch(fallback_url, json=json_body, **kwargs)
@@ -570,10 +603,12 @@ class PAISClient:
         full_url = self._url(path)
         resp = self._client.delete(full_url, **kwargs)
 
-        if resp.status_code in (403, 404) and "/control/" in full_url and "<html" in resp.text.lower():
+        if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
             log.info("DELETE '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
             resp_fallback = self._client.delete(fallback_url, **kwargs)
+            if resp_fallback.status_code < 400:
+                return resp_fallback.json()
             if resp_fallback.status_code < 400:
                 return resp_fallback.json()
 
