@@ -82,6 +82,37 @@ def load_config(path: str, expand: bool = True) -> dict:
 # Auth resolution (environment overrides config)
 # ---------------------------------------------------------------------------
 
+def decode_jwt_payload(token: str) -> dict[str, Any] | None:
+    """Safely decode unverified JWT payload for debugging log output."""
+    import base64
+    try:
+        parts = token.split(".")
+        if len(parts) == 3:
+            payload_b64 = parts[1]
+            rem = len(payload_b64) % 4
+            if rem > 0:
+                payload_b64 += "=" * (4 - rem)
+            decoded_bytes = base64.urlsafe_b64decode(payload_b64)
+            return json.loads(decoded_bytes)
+    except Exception:
+        pass
+    return None
+
+
+def fetch_pais_env(base_url: str, verify_ssl: bool = True) -> dict[str, Any] | None:
+    """Fetch https://<pais-host>/env.json to get PAIS OIDC configuration."""
+    env_url = f"{base_url.rstrip('/')}/env.json"
+    try:
+        with httpx.Client(verify=verify_ssl, timeout=10) as client:
+            resp = client.get(env_url)
+            if resp.status_code == 200:
+                data = resp.json()
+                log.info("Fetched PAIS instance config from '%s': %s", env_url, json.dumps(data))
+                return data
+            else:
+                log.debug("Fetch '%s' returned status %d", env_url, resp.status_code)
+    except Exception as exc:
+        log.debug("Could not fetch '%s': %s", env_url, exc)
 def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     """
     Merge connection settings from config with environment variables.
@@ -130,6 +161,9 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
             "not the Authentik login host.",
             base_url,
         )
+
+    # Attempt fetching /env.json to auto-discover PAIS OIDC settings
+    fetch_pais_env(base_url, verify_ssl=bool(verify_ssl))
 
     return base_url, auth_cfg, bool(verify_ssl)
 
@@ -353,6 +387,18 @@ class OAuth2PasswordAuth(httpx.Auth):
 
             log.info("Acquired %d Bearer token candidate(s). Active token len=%d",
                      len(self._token_candidates), len(self._active_token))
+
+            for idx, cand in enumerate(self._token_candidates):
+                claims = decode_jwt_payload(cand)
+                if claims:
+                    log.info("  Candidate [%d] JWT Claims: iss='%s', aud='%s', sub='%s', user='%s', groups=%s, scope='%s'",
+                             idx, claims.get("iss"), claims.get("aud"), claims.get("sub"),
+                             claims.get("preferred_username") or claims.get("username"),
+                             claims.get("groups") or claims.get("roles"),
+                             claims.get("scope"))
+                else:
+                    log.info("  Candidate [%d]: Opaque token / App Password Key (len=%d)", idx, len(cand))
+
             return self._active_token
 
     def auth_flow(self, request: httpx.Request):
