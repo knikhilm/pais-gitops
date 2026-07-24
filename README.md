@@ -424,16 +424,17 @@ gh secret set HARBOR_PASSWORD    --body "your-harbor-secret"
 
 1. **Branch Checkout**:
    ```bash
-   git checkout -b 21julyupdates
+   git checkout -b feature/model-updates
    ```
 
 2. **Update `config.yaml`**: Define new model endpoints, routes, cluster login parameters, data sources, and agents.
 
-3. **Commit and Push**:
+3. **Commit, Push, and Create PR**:
    ```bash
    git add .
    git commit -m "Deploy Llama3 8B vLLM endpoint and support agent"
-   git push -u origin 21julyupdates
+   git push -u origin feature/model-updates
+   # Open Pull Request targeting `main`
    ```
 
 4. **GitHub Actions Execution**:
