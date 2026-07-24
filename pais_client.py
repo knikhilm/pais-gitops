@@ -412,7 +412,19 @@ class PAISClient:
     # -- internals ---------------------------------------------------------
 
     def _url(self, path: str) -> str:
-        return f"{self._base}{path}"
+        base = self._base
+        # Prevent URL path duplication when base_url already includes /api/v1/control or /api/v1
+        if base.endswith("/api/v1/control") and path.startswith("/api/v1/control/"):
+            path = path[len("/api/v1/control"):]
+        elif base.endswith("/api/v1") and path.startswith("/api/v1/"):
+            path = path[len("/api/v1"):]
+        elif base.endswith("/api") and path.startswith("/api/"):
+            path = path[len("/api"):]
+
+        if not path.startswith("/") and not base.endswith("/"):
+            path = "/" + path
+
+        return f"{base}{path}"
 
     def _ensure_online(self) -> None:
         if self._offline or self._client is None:
@@ -433,25 +445,61 @@ class PAISClient:
 
     def get(self, path: str, **kwargs: Any) -> Any:
         self._ensure_online()
-        resp = self._client.get(self._url(path), **kwargs)
+        full_url = self._url(path)
+        resp = self._client.get(full_url, **kwargs)
+
+        if resp.status_code in (403, 404) and "/control/" in full_url and "<html" in resp.text.lower():
+            fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
+            log.info("GET '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
+            resp_fallback = self._client.get(fallback_url, **kwargs)
+            if resp_fallback.status_code < 400:
+                return resp_fallback.json()
+
         self._raise_for_status(resp, f"GET {path}")
         return resp.json()
 
     def post(self, path: str, json_body: dict | None = None, **kwargs: Any) -> Any:
         self._ensure_online()
-        resp = self._client.post(self._url(path), json=json_body, **kwargs)
+        full_url = self._url(path)
+        resp = self._client.post(full_url, json=json_body, **kwargs)
+
+        if resp.status_code in (403, 404) and "/control/" in full_url and "<html" in resp.text.lower():
+            fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
+            log.info("POST '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
+            resp_fallback = self._client.post(fallback_url, json=json_body, **kwargs)
+            if resp_fallback.status_code < 400:
+                return resp_fallback.json()
+
         self._raise_for_status(resp, f"POST {path}")
         return resp.json()
 
     def patch(self, path: str, json_body: dict | None = None, **kwargs: Any) -> Any:
         self._ensure_online()
-        resp = self._client.patch(self._url(path), json=json_body, **kwargs)
+        full_url = self._url(path)
+        resp = self._client.patch(full_url, json=json_body, **kwargs)
+
+        if resp.status_code in (403, 404) and "/control/" in full_url and "<html" in resp.text.lower():
+            fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
+            log.info("PATCH '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
+            resp_fallback = self._client.patch(fallback_url, json=json_body, **kwargs)
+            if resp_fallback.status_code < 400:
+                return resp_fallback.json()
+
         self._raise_for_status(resp, f"PATCH {path}")
         return resp.json()
 
     def delete(self, path: str, **kwargs: Any) -> Any:
         self._ensure_online()
-        resp = self._client.delete(self._url(path), **kwargs)
+        full_url = self._url(path)
+        resp = self._client.delete(full_url, **kwargs)
+
+        if resp.status_code in (403, 404) and "/control/" in full_url and "<html" in resp.text.lower():
+            fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
+            log.info("DELETE '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
+            resp_fallback = self._client.delete(fallback_url, **kwargs)
+            if resp_fallback.status_code < 400:
+                return resp_fallback.json()
+
         self._raise_for_status(resp, f"DELETE {path}")
         return resp.json()
 
