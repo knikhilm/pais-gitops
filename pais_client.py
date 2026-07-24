@@ -170,9 +170,8 @@ class OAuth2PasswordAuth(httpx.Auth):
         self.client_secret = client_secret.strip() if client_secret and client_secret.strip() else None
         self.scope = scope.strip() if scope and scope.strip() else None
         self.verify_ssl = verify_ssl
-        self._access_token: str | None = None
-        self._id_token: str | None = None
         self._active_token: str | None = None
+        self._token_candidates: list[str] = []
 
     def _generate_authentik_app_password(self, base_url: str) -> str | None:
         """
@@ -266,7 +265,9 @@ class OAuth2PasswordAuth(httpx.Auth):
 
     def _fetch_token(self) -> str:
         req_scope = self.scope or "openid groups offline_access"
+        self._token_candidates = []
         token_data: dict[str, Any] = {}
+        app_password_key: str | None = None
 
         with httpx.Client(verify=self.verify_ssl, timeout=30) as client:
             # --- Strategy 1: Standard OIDC ROPC Grant (grant_type=password) ---
@@ -302,6 +303,9 @@ class OAuth2PasswordAuth(httpx.Auth):
                 base_auth_url = self.token_url.split("/application/o/")[0].split("/api/v3/")[0]
                 app_password_key = self._generate_authentik_app_password(base_auth_url)
                 if app_password_key:
+                    # Priority 1: Add the created Authentik API token key directly as a candidate!
+                    self._token_candidates.append(app_password_key)
+
                     # Exchange generated App Password Key at OIDC Token Endpoint
                     log.info("Exchanging generated Authentik App Password key at OIDC token endpoint...")
                     data_app = {
@@ -317,11 +321,9 @@ class OAuth2PasswordAuth(httpx.Auth):
                     resp_app = client.post(self.token_url, data=data_app)
                     if resp_app.status_code == 200:
                         token_data = resp_app.json()
-                    else:
-                        token_data = {"access_token": app_password_key}
 
             # --- Strategy 4: Clean OIDC Form POST without scope ---
-            if not token_data:
+            if not token_data and not app_password_key:
                 log.info("Trying clean OIDC form payload...")
                 data_clean = {
                     "grant_type": "password",
@@ -333,38 +335,46 @@ class OAuth2PasswordAuth(httpx.Auth):
                 if resp_clean.status_code == 200:
                     token_data = resp_clean.json()
 
-            if not token_data:
+            # Collect token candidates from OIDC JSON response if present
+            if token_data:
+                access_tok = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
+                id_tok = token_data.get("id_token")
+                if access_tok and access_tok not in self._token_candidates:
+                    self._token_candidates.append(access_tok)
+                if id_tok and id_tok not in self._token_candidates:
+                    self._token_candidates.append(id_tok)
+
+            if not self._token_candidates:
                 log.error("OIDC Token fetch from '%s' failed [%d]: %s", self.token_url, resp1.status_code, resp1.text)
                 resp1.raise_for_status()
 
-            self._access_token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
-            self._id_token = token_data.get("id_token")
-            self._active_token = self._access_token or self._id_token
+            # Active token defaults to candidate 0 (the created API token key or access_token)
+            self._active_token = self._token_candidates[0]
 
-            if not self._active_token:
-                raise ValueError(f"No access_token or id_token returned by {self.token_url}: {token_data}")
-
-            log.info("Successfully acquired Bearer token (token length=%d, id_token_available=%s)",
-                     len(self._active_token), bool(self._id_token))
+            log.info("Acquired %d Bearer token candidate(s). Active token len=%d",
+                     len(self._token_candidates), len(self._active_token))
             return self._active_token
 
     def auth_flow(self, request: httpx.Request):
         if not self._active_token:
             self._fetch_token()
+
         request.headers["Authorization"] = f"Bearer {self._active_token}"
         response = yield request
 
-        # If 401 or 403 occurs with access_token and id_token is available, retry with id_token
-        if response.status_code in (401, 403) and self._id_token and self._active_token != self._id_token:
-            log.info("Request returned %d with access_token. Retrying with id_token...", response.status_code)
-            self._active_token = self._id_token
-            request.headers["Authorization"] = f"Bearer {self._active_token}"
-            yield request
-        elif response.status_code in (401, 403):
-            # Refresh token
-            self._fetch_token()
-            request.headers["Authorization"] = f"Bearer {self._active_token}"
-            yield request
+        # If 401 or 403 occurs, iterate over alternative token candidates
+        if response.status_code in (401, 403) and len(self._token_candidates) > 1:
+            for candidate in list(self._token_candidates):
+                if candidate == self._active_token:
+                    continue
+                log.info("PAIS API returned %d with active token. Retrying with alternative token candidate (len=%d)...",
+                         response.status_code, len(candidate))
+                self._active_token = candidate
+                request.headers["Authorization"] = f"Bearer {self._active_token}"
+                response = yield request
+                if response.status_code < 400:
+                    log.info("Token candidate succeeded with status %d!", response.status_code)
+                    break
 
 
 def build_auth(auth_cfg: dict, verify_ssl: bool = True) -> httpx.Auth:
