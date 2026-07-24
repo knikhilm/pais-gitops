@@ -27,12 +27,18 @@ kubernetes:
   # Kubernetes Cluster Authentication & Login Options
   # ----------------------------------------------------------
   # Method 1: VCF CLI Authentication (vcf context create & vcf context use)
-  # Authenticates to the Supervisor / VKS Cluster via official VCF CLI
+  # Authenticates to the VCF Cluster via official VCF CLI
   vsphere:
-    server: "${VCF_ENDPOINT}"               # e.g. https://192.168.1.100 or vc.domain.local (VCF_ENDPOINT or VSPHERE_SERVER)
-    username: "${VCF_USER}"                 # e.g. administrator@vsphere.local (VCF_USER or VSPHERE_USER)
-    password: "${VCF_PASSWORD}"             # VCF_PASSWORD or VSPHERE_PASSWORD
-    context_name: "pais-vcf-context"
+    server: "${VCF_ENDPOINT}"               # e.g. auto-vip.vcf05.showcase.tmm.broadcom.lab
+    api_token: "${VCF_API_TOKEN}"           # e.g. fie78N9wJNSGllIhrtq9IqrvbRGWpKTR (or use username/password)
+    username: "${VCF_USER}"                 # Fallback if api_token not provided
+    password: "${VCF_PASSWORD}"             # Fallback if api_token not provided
+    type: "cci"                             # e.g. cci or vsphere
+    auth_type: "basic"                      # e.g. basic
+    tenant_name: "all-apps"                 # e.g. all-apps
+    namespace: "${VCF_NAMESPACE}"           # e.g. paif-4hqfz
+    project_name: "${VCF_PROJECT}"         # e.g. paif-project
+    context_name: "vcf05paif"               # Target context name -> vcf context use vcf05paif:paif-4hqfz:paif-project
 
   # Method 2: OCI / Harbor Registry Pull Secret Provisioning
   # Automatically creates a kubernetes.io/dockerconfigjson Secret in the namespace

@@ -44,8 +44,11 @@ jobs:
       # --- VCF CLI / Kubeconfig login secrets for K8s deployment ---
       KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
       VCF_ENDPOINT: ${{ secrets.VCF_ENDPOINT || secrets.VSPHERE_SERVER }}
+      VCF_API_TOKEN: ${{ secrets.VCF_API_TOKEN }}
       VCF_USER: ${{ secrets.VCF_USER || secrets.VSPHERE_USER }}
       VCF_PASSWORD: ${{ secrets.VCF_PASSWORD || secrets.VSPHERE_PASSWORD }}
+      VCF_NAMESPACE: ${{ secrets.VCF_NAMESPACE || secrets.VSPHERE_NAMESPACE }}
+      VCF_PROJECT: ${{ secrets.VCF_PROJECT || secrets.PROJECT_NAME }}
       # --- OCI / Harbor Registry Credentials for Image Pull Secret ---
       HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
       HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}

@@ -52,26 +52,46 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
 
     # Method 1: VCF CLI Authentication (vcf context create & vcf context use)
     v_server = os.environ.get("VCF_ENDPOINT", os.environ.get("VSPHERE_SERVER", vsphere_cfg.get("server", "")))
+    v_token = os.environ.get("VCF_API_TOKEN", vsphere_cfg.get("api_token", ""))
     v_user = os.environ.get("VCF_USER", os.environ.get("VSPHERE_USER", vsphere_cfg.get("username", "")))
     v_pass = os.environ.get("VCF_PASSWORD", os.environ.get("VSPHERE_PASSWORD", vsphere_cfg.get("password", "")))
-    v_ctx = vsphere_cfg.get("context_name", "pais-vcf-context")
+    v_type = os.environ.get("VCF_TYPE", vsphere_cfg.get("type", "cci"))
+    v_auth_type = os.environ.get("VCF_AUTH_TYPE", vsphere_cfg.get("auth_type", "basic"))
+    v_tenant = os.environ.get("VCF_TENANT_NAME", vsphere_cfg.get("tenant_name", "all-apps"))
+    v_ns = os.environ.get("VCF_NAMESPACE", os.environ.get("VSPHERE_NAMESPACE", vsphere_cfg.get("namespace", k8s_cfg.get("namespace", ""))))
+    v_project = os.environ.get("VCF_PROJECT", os.environ.get("PROJECT_NAME", vsphere_cfg.get("project_name", vsphere_cfg.get("project", ""))))
+    v_ctx_name = os.environ.get("VCF_CONTEXT_NAME", vsphere_cfg.get("context_name", "vcf05paif"))
 
-    if v_server and v_user and v_pass:
-        log.info("Authenticating to VCF Supervisor Cluster at %s via 'vcf context create'...", v_server)
+    if v_server and (v_token or (v_user and v_pass)):
+        log.info("Authenticating to VCF Cluster at %s via 'vcf context create'...", v_server)
         cmd_create = [
-            "vcf", "context", "create", v_ctx,
+            "vcf", "context", "create", v_ctx_name,
             "--endpoint", v_server,
-            "--username", v_user,
-            "--password", v_pass,
-            "--type", "vsphere",
+            "--type", v_type,
+            "--auth-type", v_auth_type,
             "--insecure-skip-tls-verify",
         ]
-        cmd_use = ["vcf", "context", "use", v_ctx]
+        if v_token:
+            cmd_create.extend(["--api-token", v_token])
+        else:
+            cmd_create.extend(["--username", v_user, "--password", v_pass])
+
+        if v_tenant:
+            cmd_create.extend(["--tenant-name", v_tenant])
+
+        if v_ns and v_project:
+            full_context = f"{v_ctx_name}:{v_ns}:{v_project}"
+        elif v_ns:
+            full_context = f"{v_ctx_name}:{v_ns}"
+        else:
+            full_context = v_ctx_name
+
+        cmd_use = ["vcf", "context", "use", full_context]
         try:
             res_create = subprocess.run(cmd_create, capture_output=True, text=True, check=True)
             log.info("VCF context created: %s", res_create.stdout.strip())
             res_use = subprocess.run(cmd_use, capture_output=True, text=True, check=True)
-            log.info("VCF context switched to '%s': %s", v_ctx, res_use.stdout.strip())
+            log.info("VCF context switched to '%s': %s", full_context, res_use.stdout.strip())
             return True
         except Exception as exc:
             log.warning("VCF context create/use failed: %s. Falling back to default kubeconfig...", exc)

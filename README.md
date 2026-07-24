@@ -104,16 +104,18 @@ The tooling uses a three-part authentication model:
 `k8s_manager.py` authenticates to the VCF Supervisor Cluster / VKS cluster using one of three supported methods:
 
 - **Method A: VCF CLI Context Login (`vcf context create` & `vcf context use`)**  
-  Replaces the deprecated `kubectl vsphere login`. When `VCF_ENDPOINT` (or `VSPHERE_SERVER`), `VCF_USER`, and `VCF_PASSWORD` are provided, the script runs:
+  Replaces the deprecated `kubectl vsphere login`. Generates and uses the context using your VCF API token or credentials, CCI type, tenant name, and namespace/project structure:
   ```bash
-  vcf context create pais-vcf-context \
+  vcf context create vcf05paif \
     --endpoint=${VCF_ENDPOINT} \
-    --username=${VCF_USER} \
-    --password=${VCF_PASSWORD} \
-    --type vsphere \
-    --insecure-skip-tls-verify
+    --api-token=${VCF_API_TOKEN} \
+    --type cci \
+    --insecure-skip-tls-verify \
+    --auth-type basic \
+    --tenant-name all-apps
 
-  vcf context use pais-vcf-context
+  vcf context use vcf05paif:${VCF_NAMESPACE}:${VCF_PROJECT}
+  # e.g., vcf context use vcf05paif:paif-4hqfz:paif-project
   ```
 
 - **Method B: ServiceAccount / Bearer Token Login**  
@@ -338,10 +340,11 @@ Secret interpolation uses `${ENV_VAR_NAME}` syntax:
 | `PAIS_CLIENT_ID` | OIDC Client ID |
 | `PAIS_USERNAME` | OIDC Admin / User Username |
 | `PAIS_PASSWORD` | OIDC Password / Bearer Token |
-| `VSPHERE_SERVER` | vSphere Supervisor Cluster FQDN or IP |
-| `VSPHERE_USER` | vSphere SSO Username |
-| `VSPHERE_PASSWORD` | vSphere SSO Password |
-| `VSPHERE_NAMESPACE` | Target vSphere Namespace |
+| `VCF_ENDPOINT` / `VSPHERE_SERVER` | VCF Supervisor Cluster FQDN or IP |
+| `VCF_USER` / `VSPHERE_USER` | VCF / vSphere Username |
+| `VCF_PASSWORD` / `VSPHERE_PASSWORD` | VCF / vSphere Password |
+| `VCF_NAMESPACE` / `VSPHERE_NAMESPACE` | VCF / vSphere Namespace |
+| `VCF_PROJECT` / `PROJECT_NAME` | VCF Automation Project Name |
 | `HARBOR_REGISTRY` | Harbor / OCI Registry FQDN (e.g. `harbor.internal.example.com`) |
 | `HARBOR_USERNAME` | Harbor Registry Username |
 | `HARBOR_PASSWORD` | Harbor Registry Password |
@@ -387,6 +390,8 @@ gh secret set PAIS_PASSWORD      --body "your-password"
 gh secret set VCF_ENDPOINT       --body "https://vc.domain.local"
 gh secret set VCF_USER           --body "administrator@vsphere.local"
 gh secret set VCF_PASSWORD       --body "your-vsphere-password"
+gh secret set VCF_NAMESPACE      --body "your-vsphere-namespace"
+gh secret set VCF_PROJECT        --body "your-vcf-project-name"
 
 # OCI Registry Secrets (for pulling model artifacts)
 gh secret set HARBOR_REGISTRY    --body "harbor.internal.example.com"
