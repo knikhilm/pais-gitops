@@ -86,7 +86,7 @@ The tooling uses a three-part authentication model:
 │                       Authentication & Login Flow                           │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 1. Kubernetes Cluster Login:                                                │
-│    - vSphere SSO Login (`kubectl vsphere login` via VSPHERE_SERVER/USER/PASS)│
+│    - VCF CLI Context (`vcf context create` & `vcf context use` via VCF_*)   │
 │    - OR Kubeconfig (`KUBECONFIG_DATA` base64) / Bearer Token (`KUBE_TOKEN`) │
 │                                                                             │
 │ 2. OCI Model Registry Pull Authentication:                                  │
@@ -99,19 +99,21 @@ The tooling uses a three-part authentication model:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.1 Kubernetes Cluster Authentication (vSphere / VKS Login)
+### 2.1 Kubernetes Cluster Authentication (VCF CLI Login)
 
-`k8s_manager.py` authenticates to the vSphere Supervisor Cluster / VKS cluster using one of three supported methods:
+`k8s_manager.py` authenticates to the VCF Supervisor Cluster / VKS cluster using one of three supported methods:
 
-- **Method A: vSphere with Tanzu Login (`kubectl vsphere login`)**  
-  Used when interacting with vSphere Supervisor Clusters. When `VSPHERE_SERVER`, `VSPHERE_USER`, and `VSPHERE_PASSWORD` are provided, the script runs:
+- **Method A: VCF CLI Context Login (`vcf context create` & `vcf context use`)**  
+  Replaces the deprecated `kubectl vsphere login`. When `VCF_ENDPOINT` (or `VSPHERE_SERVER`), `VCF_USER`, and `VCF_PASSWORD` are provided, the script runs:
   ```bash
-  kubectl vsphere login \
-    --server=${VSPHERE_SERVER} \
-    --vsphere-username=${VSPHERE_USER} \
-    --vsphere-password=${VSPHERE_PASSWORD} \
-    --tanzu-kubernetes-cluster-namespace=${VSPHERE_NAMESPACE} \
+  vcf context create pais-vcf-context \
+    --endpoint=${VCF_ENDPOINT} \
+    --username=${VCF_USER} \
+    --password=${VCF_PASSWORD} \
+    --type vsphere \
     --insecure-skip-tls-verify
+
+  vcf context use pais-vcf-context
   ```
 
 - **Method B: ServiceAccount / Bearer Token Login**  
@@ -381,11 +383,10 @@ gh secret set PAIS_CLIENT_ID     --body "pais-client"
 gh secret set PAIS_USERNAME      --body "admin"
 gh secret set PAIS_PASSWORD      --body "your-password"
 
-# vSphere / Cluster Authentication Secrets
-gh secret set VSPHERE_SERVER     --body "https://vc.domain.local"
-gh secret set VSPHERE_USER       --body "administrator@vsphere.local"
-gh secret set VSPHERE_PASSWORD   --body "your-vsphere-password"
-gh secret set VSPHERE_NAMESPACE  --body "pais-ns"
+# vSphere / VCF Cluster Authentication Secrets
+gh secret set VCF_ENDPOINT       --body "https://vc.domain.local"
+gh secret set VCF_USER           --body "administrator@vsphere.local"
+gh secret set VCF_PASSWORD       --body "your-vsphere-password"
 
 # OCI Registry Secrets (for pulling model artifacts)
 gh secret set HARBOR_REGISTRY    --body "harbor.internal.example.com"
@@ -412,7 +413,7 @@ gh secret set HARBOR_PASSWORD    --body "your-harbor-secret"
    ```
 
 4. **GitHub Actions Execution**:
-   - Step 0: Authenticates to cluster via `kubectl vsphere login` or Kubeconfig, generates `harbor-registry-secret`, builds `pais.vmware.com/v1alpha1` `ModelEndpoint` and `InferenceGatewayRoute` manifests, and applies via `kubectl`.
+   - Step 0: Authenticates to cluster via `vcf context create` & `vcf context use` (or Kubeconfig), generates `harbor-registry-secret`, builds `pais.vmware.com/v1alpha1` `ModelEndpoint` and `InferenceGatewayRoute` manifests, and applies via `kubectl`.
    - Step 1: Provisions S3 / Google Drive Data Sources.
    - Step 2: Provisions Knowledge Bases and triggers indexing.
    - Step 3-5: Registers MCP Servers and approves tools.
@@ -434,7 +435,7 @@ gh secret set HARBOR_PASSWORD    --body "your-harbor-secret"
 
 | Issue | Resolution |
 | --- | --- |
-| `kubectl vsphere login` fails | Ensure `VSPHERE_SERVER`, `VSPHERE_USER`, and `VSPHERE_PASSWORD` secrets are correct, and the `kubectl-vsphere` CLI plugin is installed on the runner. |
+| `vcf context create` fails | Ensure `VCF_ENDPOINT` (or `VSPHERE_SERVER`), `VCF_USER`, and `VCF_PASSWORD` secrets are correct, and the `vcf` CLI is installed on the runner. |
 | ModelEndpoint status `ImagePullBackOff` | Verify `harbor-registry-secret` creation. Ensure `HARBOR_REGISTRY`, `HARBOR_USERNAME`, and `HARBOR_PASSWORD` are valid and the user has pull permissions on the OCI repository. |
 | ModelEndpoint status `Pending` | Check node pool vGPU availability (`virtualMachineClassName`) or vSphere Zone (`failureDomain`). |
 | Agent return code 404 on Model | Verify that the `routing_name` in `ModelEndpoint` matches the `matches.routing_name` in `InferenceGatewayRoute`. |

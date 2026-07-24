@@ -26,13 +26,13 @@ kubernetes:
   # ----------------------------------------------------------
   # Kubernetes Cluster Authentication & Login Options
   # ----------------------------------------------------------
-  # Method 1: vSphere with Tanzu Login (kubectl vsphere login)
-  # Uses vSphere SSO credentials to authenticate to the Supervisor / VKS Cluster
+  # Method 1: VCF CLI Authentication (vcf context create & vcf context use)
+  # Authenticates to the Supervisor / VKS Cluster via official VCF CLI
   vsphere:
-    server: "${VSPHERE_SERVER}"             # e.g. https://192.168.1.100 or vc.domain.local
-    username: "${VSPHERE_USER}"             # e.g. administrator@vsphere.local
-    password: "${VSPHERE_PASSWORD}"
-    namespace: "${VSPHERE_NAMESPACE}"
+    server: "${VCF_ENDPOINT}"               # e.g. https://192.168.1.100 or vc.domain.local (VCF_ENDPOINT or VSPHERE_SERVER)
+    username: "${VCF_USER}"                 # e.g. administrator@vsphere.local (VCF_USER or VSPHERE_USER)
+    password: "${VCF_PASSWORD}"             # VCF_PASSWORD or VSPHERE_PASSWORD
+    context_name: "pais-vcf-context"
 
   # Method 2: OCI / Harbor Registry Pull Secret Provisioning
   # Automatically creates a kubernetes.io/dockerconfigjson Secret in the namespace

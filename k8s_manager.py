@@ -39,7 +39,7 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
     Attempt to log into the target Kubernetes cluster (vSphere Supervisor/VKS or standard K8s).
 
     Tries in order:
-      1. vSphere SSO login (`kubectl vsphere login`) if vSphere credentials exist.
+      1. VCF CLI login (`vcf context create` and `vcf context use`) if VCF/vSphere credentials exist.
       2. ServiceAccount / Bearer token login if KUBE_SERVER and KUBE_TOKEN exist.
       3. Existing active kubeconfig context.
     """
@@ -50,28 +50,31 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
     k8s_cfg = config.get("kubernetes", {})
     vsphere_cfg = k8s_cfg.get("vsphere", {})
 
-    # Method 1: vSphere with Tanzu Login (kubectl vsphere login)
-    v_server = os.environ.get("VSPHERE_SERVER", vsphere_cfg.get("server", ""))
-    v_user = os.environ.get("VSPHERE_USER", vsphere_cfg.get("username", ""))
-    v_pass = os.environ.get("VSPHERE_PASSWORD", vsphere_cfg.get("password", ""))
-    v_namespace = os.environ.get("VSPHERE_NAMESPACE", vsphere_cfg.get("namespace", k8s_cfg.get("namespace", "default")))
+    # Method 1: VCF CLI Authentication (vcf context create & vcf context use)
+    v_server = os.environ.get("VCF_ENDPOINT", os.environ.get("VSPHERE_SERVER", vsphere_cfg.get("server", "")))
+    v_user = os.environ.get("VCF_USER", os.environ.get("VSPHERE_USER", vsphere_cfg.get("username", "")))
+    v_pass = os.environ.get("VCF_PASSWORD", os.environ.get("VSPHERE_PASSWORD", vsphere_cfg.get("password", "")))
+    v_ctx = vsphere_cfg.get("context_name", "pais-vcf-context")
 
     if v_server and v_user and v_pass:
-        log.info("Authenticating to vSphere Supervisor Cluster at %s via 'kubectl vsphere login'...", v_server)
-        cmd = [
-            "kubectl", "vsphere", "login",
-            f"--server={v_server}",
-            f"--vsphere-username={v_user}",
-            f"--vsphere-password={v_pass}",
-            f"--tanzu-kubernetes-cluster-namespace={v_namespace}",
+        log.info("Authenticating to VCF Supervisor Cluster at %s via 'vcf context create'...", v_server)
+        cmd_create = [
+            "vcf", "context", "create", v_ctx,
+            "--endpoint", v_server,
+            "--username", v_user,
+            "--password", v_pass,
+            "--type", "vsphere",
             "--insecure-skip-tls-verify",
         ]
+        cmd_use = ["vcf", "context", "use", v_ctx]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            log.info("vSphere login successful: %s", res.stdout.strip())
+            res_create = subprocess.run(cmd_create, capture_output=True, text=True, check=True)
+            log.info("VCF context created: %s", res_create.stdout.strip())
+            res_use = subprocess.run(cmd_use, capture_output=True, text=True, check=True)
+            log.info("VCF context switched to '%s': %s", v_ctx, res_use.stdout.strip())
             return True
         except Exception as exc:
-            log.warning("vSphere login failed: %s. Falling back to default kubeconfig...", exc)
+            log.warning("VCF context create/use failed: %s. Falling back to default kubeconfig...", exc)
 
     # Method 2: ServiceAccount / Bearer Token Login
     k_server = os.environ.get("KUBE_SERVER", k8s_cfg.get("server", ""))

@@ -41,12 +41,11 @@ jobs:
       # --- Data-source credentials referenced as ${...} in config.yaml ---
       GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
       S3_CREDENTIALS: ${{ secrets.S3_CREDENTIALS }}
-      # --- Kubeconfig / vSphere login secrets for K8s deployment ---
+      # --- VCF CLI / Kubeconfig login secrets for K8s deployment ---
       KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
-      VSPHERE_SERVER: ${{ secrets.VSPHERE_SERVER }}
-      VSPHERE_USER: ${{ secrets.VSPHERE_USER }}
-      VSPHERE_PASSWORD: ${{ secrets.VSPHERE_PASSWORD }}
-      VSPHERE_NAMESPACE: ${{ secrets.VSPHERE_NAMESPACE }}
+      VCF_ENDPOINT: ${{ secrets.VCF_ENDPOINT || secrets.VSPHERE_SERVER }}
+      VCF_USER: ${{ secrets.VCF_USER || secrets.VSPHERE_USER }}
+      VCF_PASSWORD: ${{ secrets.VCF_PASSWORD || secrets.VSPHERE_PASSWORD }}
       # --- OCI / Harbor Registry Credentials for Image Pull Secret ---
       HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
       HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
