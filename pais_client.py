@@ -504,8 +504,10 @@ class PAISClient:
         self._base = base_url.rstrip("/")
         self._offline = offline
         headers = {
-            "Accept": "application/json",
-            "User-Agent": "PAIS-GitOps-Client/1.0",
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+            "Referer": f"{self._base}/",
+            "Origin": self._base,
         }
         self._client = None if offline else httpx.Client(
             auth=auth,
