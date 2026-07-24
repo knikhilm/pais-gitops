@@ -79,7 +79,6 @@ inference_routes:
     matches:
       routing_name: "gemma-2-9b-v6"
     backend:
-      http_base_url: "http://gemma-2-9b-v6.svc.cluster.local"
       model_id: "gemma-2-9b-v6"
       tls:
         verification: "strict"
