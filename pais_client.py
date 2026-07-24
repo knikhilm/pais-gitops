@@ -127,7 +127,7 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     """
     auth_cfg = dict(pais_cfg.get("auth", {}))
 
-    base_url = os.environ.get("PAIS_BASE_URL", pais_cfg.get("base_url", ""))
+    base_url = os.environ.get("PAIS_BASE_URL", "").strip() or str(pais_cfg.get("base_url") or "").strip()
 
     env_overrides = {
         "token": "PAIS_TOKEN",
@@ -140,15 +140,12 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
         "password": "PAIS_PASSWORD",
     }
     for key, env_name in env_overrides.items():
-        if os.environ.get(env_name) is not None:
-            val = os.environ[env_name].strip()
-            if val:
-                auth_cfg[key] = val
-            else:
-                auth_cfg[key] = ""
+        env_val = os.environ.get(env_name, "").strip()
+        if env_val:
+            auth_cfg[key] = env_val
 
     verify_ssl = auth_cfg.get("verify_ssl", True)
-    if os.environ.get("PAIS_VERIFY_SSL") is not None:
+    if os.environ.get("PAIS_VERIFY_SSL") is not None and os.environ.get("PAIS_VERIFY_SSL", "").strip() != "":
         verify_ssl = os.environ["PAIS_VERIFY_SSL"].strip().lower() not in ("0", "false", "no")
 
     if not base_url:
