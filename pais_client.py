@@ -437,14 +437,13 @@ class OAuth2PasswordAuth(httpx.Auth):
         request.headers["Authorization"] = f"Bearer {self._active_token}"
         response = yield request
 
-        # If 401 or 403 occurs, iterate over alternative token candidates
-        if response.status_code in (401, 403) and len(self._token_candidates) > 1:
+        # Only retry alternative candidates if status is 401 (invalid/rejected token)
+        if response.status_code == 401 and len(self._token_candidates) > 1:
             initial_token = self._active_token
             for candidate in list(self._token_candidates):
                 if candidate == initial_token:
                     continue
-                log.info("PAIS API returned %d with active token. Retrying with candidate token (len=%d)...",
-                         response.status_code, len(candidate))
+                log.info("PAIS API returned 401 with active token. Retrying with candidate token (len=%d)...", len(candidate))
                 self._active_token = candidate
                 request.headers["Authorization"] = f"Bearer {self._active_token}"
                 response = yield request
@@ -452,7 +451,7 @@ class OAuth2PasswordAuth(httpx.Auth):
                     log.info("Token candidate succeeded with status %d!", response.status_code)
                     return
 
-            # If all candidates failed, restore active token to primary candidate 0 (OIDC access token)
+            # Restore active token to primary candidate 0 (OIDC access token)
             self._active_token = self._token_candidates[0]
 
 
@@ -563,9 +562,9 @@ class PAISClient:
         if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
             log.info("GET '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
-            resp_fallback = self._client.get(fallback_url, **kwargs)
-            if resp_fallback.status_code < 400:
-                return resp_fallback.json()
+            resp = self._client.get(fallback_url, **kwargs)
+            if resp.status_code < 400:
+                return resp.json()
 
         self._raise_for_status(resp, f"GET {path}")
         return resp.json()
@@ -578,9 +577,9 @@ class PAISClient:
         if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
             log.info("POST '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
-            resp_fallback = self._client.post(fallback_url, json=json_body, **kwargs)
-            if resp_fallback.status_code < 400:
-                return resp_fallback.json()
+            resp = self._client.post(fallback_url, json=json_body, **kwargs)
+            if resp.status_code < 400:
+                return resp.json()
 
         self._raise_for_status(resp, f"POST {path}")
         return resp.json()
@@ -593,9 +592,9 @@ class PAISClient:
         if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
             log.info("PATCH '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
-            resp_fallback = self._client.patch(fallback_url, json=json_body, **kwargs)
-            if resp_fallback.status_code < 400:
-                return resp_fallback.json()
+            resp = self._client.patch(fallback_url, json=json_body, **kwargs)
+            if resp.status_code < 400:
+                return resp.json()
 
         self._raise_for_status(resp, f"PATCH {path}")
         return resp.json()
@@ -608,11 +607,9 @@ class PAISClient:
         if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
             log.info("DELETE '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
-            resp_fallback = self._client.delete(fallback_url, **kwargs)
-            if resp_fallback.status_code < 400:
-                return resp_fallback.json()
-            if resp_fallback.status_code < 400:
-                return resp_fallback.json()
+            resp = self._client.delete(fallback_url, **kwargs)
+            if resp.status_code < 400:
+                return resp.json()
 
         self._raise_for_status(resp, f"DELETE {path}")
         return resp.json()
