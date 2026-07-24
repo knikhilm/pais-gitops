@@ -20,7 +20,6 @@ import re
 from typing import Any
 
 import httpx
-import httpx_auth
 import yaml
 
 log = logging.getLogger("pais")
@@ -120,30 +119,72 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     return base_url, auth_cfg, bool(verify_ssl)
 
 
-def build_auth(auth_cfg: dict, verify_ssl: bool = True) -> httpx_auth.OAuth2ResourceOwnerPasswordCredentials:
+class OAuth2PasswordAuth(httpx.Auth):
+    """
+    Custom OAuth2 Resource Owner Password Credentials Auth for httpx.
+    Obtains and automatically refreshes Bearer tokens while strictly respecting `verify_ssl`.
+    """
+
+    def __init__(
+        self,
+        token_url: str,
+        client_id: str,
+        username: str,
+        password: str,
+        scope: str = "openid",
+        verify_ssl: bool = True,
+    ) -> None:
+        self.token_url = token_url
+        self.client_id = client_id
+        self.username = username
+        self.password = password
+        self.scope = scope
+        self.verify_ssl = verify_ssl
+        self._access_token: str | None = None
+
+    def _fetch_token(self) -> str:
+        data = {
+            "grant_type": "password",
+            "client_id": self.client_id,
+            "username": self.username,
+            "password": self.password,
+            "scope": self.scope,
+        }
+        with httpx.Client(verify=self.verify_ssl, timeout=30) as client:
+            resp = client.post(self.token_url, data=data)
+            resp.raise_for_status()
+            token_data = resp.json()
+            token = token_data.get("access_token")
+            if not token:
+                raise ValueError(f"No access_token returned by {self.token_url}: {resp.text}")
+            return token
+
+    def auth_flow(self, request: httpx.Request):
+        if not self._access_token:
+            self._access_token = self._fetch_token()
+        request.headers["Authorization"] = f"Bearer {self._access_token}"
+        response = yield request
+        if response.status_code == 401:
+            self._access_token = self._fetch_token()
+            request.headers["Authorization"] = f"Bearer {self._access_token}"
+            yield request
+
+
+def build_auth(auth_cfg: dict, verify_ssl: bool = True) -> OAuth2PasswordAuth:
     """Build an OIDC Resource-Owner-Password auth handler from config."""
     required = ("token_url", "client_id", "username", "password")
     missing = [k for k in required if not auth_cfg.get(k)]
     if missing:
         raise ValueError(f"Missing required auth settings: {', '.join(missing)}")
 
-    try:
-        return httpx_auth.OAuth2ResourceOwnerPasswordCredentials(
-            token_url=auth_cfg["token_url"],
-            client_id=auth_cfg["client_id"],
-            username=auth_cfg["username"],
-            password=auth_cfg["password"],
-            scope=auth_cfg.get("scope", "openid"),
-            verify=verify_ssl,
-        )
-    except TypeError:
-        return httpx_auth.OAuth2ResourceOwnerPasswordCredentials(
-            token_url=auth_cfg["token_url"],
-            client_id=auth_cfg["client_id"],
-            username=auth_cfg["username"],
-            password=auth_cfg["password"],
-            scope=auth_cfg.get("scope", "openid"),
-        )
+    return OAuth2PasswordAuth(
+        token_url=auth_cfg["token_url"],
+        client_id=auth_cfg["client_id"],
+        username=auth_cfg["username"],
+        password=auth_cfg["password"],
+        scope=auth_cfg.get("scope", "openid"),
+        verify_ssl=verify_ssl,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +197,7 @@ class PAISClient:
     def __init__(
         self,
         base_url: str,
-        auth: httpx_auth.OAuth2ResourceOwnerPasswordCredentials | None = None,
+        auth: OAuth2PasswordAuth | httpx.Auth | None = None,
         verify_ssl: bool = True,
         offline: bool = False,
     ) -> None:
