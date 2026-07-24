@@ -128,6 +128,7 @@ class OAuth2PasswordAuth(httpx.Auth):
     """
     Custom OAuth2 Resource Owner Password Credentials Auth for httpx.
     Obtains and automatically refreshes Bearer tokens while strictly respecting `verify_ssl`.
+    Compatible with public & confidential OIDC clients (Authentik, Keycloak, Okta, etc.).
     """
 
     def __init__(
@@ -140,12 +141,12 @@ class OAuth2PasswordAuth(httpx.Auth):
         scope: str | None = None,
         verify_ssl: bool = True,
     ) -> None:
-        self.token_url = token_url
-        self.client_id = client_id
-        self.username = username
-        self.password = password
-        self.client_secret = client_secret
-        self.scope = scope
+        self.token_url = (token_url or "").strip()
+        self.client_id = (client_id or "").strip()
+        self.username = (username or "").strip()
+        self.password = (password or "").strip()
+        self.client_secret = client_secret.strip() if client_secret and client_secret.strip() else None
+        self.scope = scope.strip() if scope and scope.strip() else None
         self.verify_ssl = verify_ssl
         self._access_token: str | None = None
 
@@ -156,15 +157,27 @@ class OAuth2PasswordAuth(httpx.Auth):
             "username": self.username,
             "password": self.password,
         }
-        if self.client_secret and self.client_secret.strip():
-            data["client_secret"] = self.client_secret.strip()
-        if self.scope and self.scope.strip():
-            data["scope"] = self.scope.strip()
+        if self.client_secret:
+            data["client_secret"] = self.client_secret
+        if self.scope:
+            data["scope"] = self.scope
 
         with httpx.Client(verify=self.verify_ssl, timeout=30) as client:
             resp = client.post(self.token_url, data=data)
             if resp.is_error:
-                log.error("Token fetch from '%s' failed [%d]: %s", self.token_url, resp.status_code, resp.text)
+                log.error("OIDC Token fetch from '%s' failed [%d]: %s", self.token_url, resp.status_code, resp.text)
+                log.error(
+                    "OIDC Params: grant_type='password', client_id='%s', username='%s', client_secret_provided=%s, scope='%s'",
+                    self.client_id, self.username, bool(self.client_secret), self.scope or ""
+                )
+                if "invalid_grant" in resp.text.lower():
+                    log.error(
+                        "Troubleshooting Authentik / OIDC 'invalid_grant':\n"
+                        "  1. Verify PAIS_USERNAME and PAIS_PASSWORD in GitHub Secrets are correct.\n"
+                        "  2. In Authentik, ensure 'Direct Access Grants' (Resource Owner Password Flow) is enabled on the Provider.\n"
+                        "  3. Verify PAIS_CLIENT_ID matches the Authentik OAuth2 Provider client_id.\n"
+                        "  4. Ensure the user account is active in Authentik and does not require MFA."
+                    )
             resp.raise_for_status()
             token_data = resp.json()
             token = token_data.get("access_token")
