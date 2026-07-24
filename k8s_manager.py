@@ -63,6 +63,11 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
     v_ctx_name = os.environ.get("VCF_CONTEXT_NAME", vsphere_cfg.get("context_name", "vcf05paif"))
 
     if v_server and (v_token or (v_user and v_pass)):
+        # 1. Clean up existing context if present to ensure clean create
+        log.info("Cleaning up existing VCF context '%s' if present...", v_ctx_name)
+        subprocess.run(["vcf", "context", "delete", v_ctx_name, "--yes"], capture_output=True, text=True)
+
+        # 2. Create VCF context
         log.info("Authenticating to VCF Cluster at %s via 'vcf context create'...", v_server)
         cmd_create = [
             "vcf", "context", "create", v_ctx_name,
@@ -79,19 +84,18 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
         if v_tenant:
             cmd_create.extend(["--tenant-name", v_tenant])
 
-        # Execute vcf context create (handle existing context or warnings gracefully)
         res_create = subprocess.run(cmd_create, capture_output=True, text=True)
         if res_create.returncode == 0:
             log.info("VCF context '%s' created successfully: %s", v_ctx_name, res_create.stdout.strip())
         else:
-            log.info(
-                "Note on 'vcf context create' (exit code %d): %s %s",
+            log.warning(
+                "VCF context create warning/error (code %d):\nSTDOUT: %s\nSTDERR: %s",
                 res_create.returncode,
                 res_create.stdout.strip(),
                 res_create.stderr.strip(),
             )
 
-        # Target context string
+        # 3. Switch context
         if v_ns and v_project:
             full_context = f"{v_ctx_name}:{v_ns}:{v_project}"
         elif v_ns:
@@ -101,13 +105,16 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
 
         cmd_use = ["vcf", "context", "use", full_context]
         log.info("Switching VCF context via 'vcf context use %s'...", full_context)
-        res_use = subprocess.run(cmd_use, capture_output=True, text=True)
+
+        token_input = f"{v_token}\n" if v_token else (f"{v_pass}\n" if v_pass else None)
+        res_use = subprocess.run(cmd_use, input=token_input, capture_output=True, text=True)
+
         if res_use.returncode == 0:
             log.info("VCF context switched to '%s': %s", full_context, res_use.stdout.strip())
             return True
         else:
             log.warning(
-                "VCF context use failed (exit code %d): %s %s. Falling back to default kubeconfig...",
+                "VCF context use failed (code %d):\nSTDOUT: %s\nSTDERR: %s. Falling back to default kubeconfig...",
                 res_use.returncode,
                 res_use.stdout.strip(),
                 res_use.stderr.strip(),
@@ -147,7 +154,7 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
 # 2. Secret Provisioning Builders (Image Pull & Backend API Tokens)
 # ---------------------------------------------------------------------------
 
-def build_docker_registry_secret(registry_cfg: dict, default_namespace: str = "default") -> dict[str, Any] | None:
+def build_docker_registry_secret(registry_cfg: dict, default_namespace: str | None = None) -> dict[str, Any] | None:
     """
     Generate a Kubernetes secret of type `kubernetes.io/dockerconfigjson`
     used by VKS node pools to pull OCI model artifacts from Harbor/registries.
@@ -203,9 +210,10 @@ def build_docker_registry_secret(registry_cfg: dict, default_namespace: str = "d
 
     metadata: dict[str, Any] = {
         "name": secret_name,
-        "namespace": namespace,
         "labels": labels,
     }
+    if namespace:
+        metadata["namespace"] = namespace
     if annotations:
         metadata["annotations"] = annotations
 
@@ -218,7 +226,7 @@ def build_docker_registry_secret(registry_cfg: dict, default_namespace: str = "d
     }
 
 
-def build_api_token_secret(token_cfg: dict, default_namespace: str = "default") -> dict[str, Any] | None:
+def build_api_token_secret(token_cfg: dict, default_namespace: str | None = None) -> dict[str, Any] | None:
     """
     Generate a Kubernetes secret of type `pais.vmware.com/api-token-credentials`
     used by InferenceGatewayRoute backend authentication.
@@ -232,16 +240,19 @@ def build_api_token_secret(token_cfg: dict, default_namespace: str = "default") 
 
     encoded_token = base64.b64encode(api_token.encode("utf-8")).decode("utf-8")
 
+    metadata: dict[str, Any] = {
+        "name": name,
+        "labels": {
+            "app.kubernetes.io/managed-by": "pais-gitops",
+        },
+    }
+    if namespace:
+        metadata["namespace"] = namespace
+
     return {
         "apiVersion": "v1",
         "kind": "Secret",
-        "metadata": {
-            "name": name,
-            "namespace": namespace,
-            "labels": {
-                "app.kubernetes.io/managed-by": "pais-gitops",
-            },
-        },
+        "metadata": metadata,
         "type": "pais.vmware.com/api-token-credentials",
         "data": {
             "api_token": encoded_token,
@@ -253,7 +264,7 @@ def build_api_token_secret(token_cfg: dict, default_namespace: str = "default") 
 # 3. CRD Manifest Builders
 # ---------------------------------------------------------------------------
 
-def build_model_endpoint_crd(endpoint_cfg: dict, default_namespace: str = "default") -> dict[str, Any]:
+def build_model_endpoint_crd(endpoint_cfg: dict, default_namespace: str | None = None) -> dict[str, Any]:
     """
     Construct a Kubernetes Custom Resource object for a PAIS ModelEndpoint.
     """
@@ -304,22 +315,25 @@ def build_model_endpoint_crd(endpoint_cfg: dict, default_namespace: str = "defau
             cust_spec["tempMountSize"] = cust["temp_mount_size"]
         spec["inferenceServerCustomization"] = cust_spec
 
+    metadata: dict[str, Any] = {
+        "name": name,
+        "labels": {
+            "app.kubernetes.io/managed-by": "pais-gitops",
+            "pais.vmware.com/routing-name": endpoint_cfg["routing_name"].replace("/", "-").lower(),
+        },
+    }
+    if namespace:
+        metadata["namespace"] = namespace
+
     return {
         "apiVersion": "pais.vmware.com/v1alpha1",
         "kind": "ModelEndpoint",
-        "metadata": {
-            "name": name,
-            "namespace": namespace,
-            "labels": {
-                "app.kubernetes.io/managed-by": "pais-gitops",
-                "pais.vmware.com/routing-name": endpoint_cfg["routing_name"].replace("/", "-").lower(),
-            },
-        },
+        "metadata": metadata,
         "spec": spec,
     }
 
 
-def build_inference_gateway_route_crd(route_cfg: dict, default_namespace: str = "default") -> dict[str, Any]:
+def build_inference_gateway_route_crd(route_cfg: dict, default_namespace: str | None = None) -> dict[str, Any]:
     """
     Construct a Kubernetes Custom Resource object for a PAIS InferenceGatewayRoute.
     """
@@ -346,16 +360,19 @@ def build_inference_gateway_route_crd(route_cfg: dict, default_namespace: str = 
             backend_spec["auth"] = backend_cfg["auth"]
         spec["backend"] = backend_spec
 
+    metadata: dict[str, Any] = {
+        "name": name,
+        "labels": {
+            "app.kubernetes.io/managed-by": "pais-gitops",
+        },
+    }
+    if namespace:
+        metadata["namespace"] = namespace
+
     return {
         "apiVersion": "pais.vmware.com/v1alpha1",
         "kind": "InferenceGatewayRoute",
-        "metadata": {
-            "name": name,
-            "namespace": namespace,
-            "labels": {
-                "app.kubernetes.io/managed-by": "pais-gitops",
-            },
-        },
+        "metadata": metadata,
         "spec": spec,
     }
 
@@ -369,7 +386,7 @@ def generate_k8s_manifests(config: dict) -> list[dict[str, Any]]:
     Build all Kubernetes manifests (Secrets, ModelEndpoints, InferenceGatewayRoutes).
     """
     k8s_cfg = config.get("kubernetes", {})
-    default_ns = k8s_cfg.get("namespace", "default")
+    default_ns = k8s_cfg.get("namespace")  # Omit namespace if not explicitly configured
 
     manifests: list[dict[str, Any]] = []
 
@@ -468,25 +485,31 @@ def delete_removed_k8s_resources(old_config: dict, new_config: dict, dry_run: bo
     if not dry_run:
         authenticate_k8s_cluster(new_config, dry_run=dry_run)
 
-    default_ns = new_config.get("kubernetes", {}).get("namespace", "default")
+    default_ns = new_config.get("kubernetes", {}).get("namespace")
 
     for name in sorted(removed_routes):
         route = old_endpoints.get(name) or old_routes.get(name) or {}
         ns = route.get("namespace", default_ns)
-        log.info("Removing InferenceGatewayRoute '%s' in namespace '%s'...", name, ns)
+        log.info("Removing InferenceGatewayRoute '%s'...", name)
+        cmd = ["delete", "inferencegatewayroute", name, "--ignore-not-found=true"]
+        if ns:
+            cmd.extend(["-n", ns])
         if dry_run:
-            log.info("  [dry-run] kubectl delete inferencegatewayroute %s -n %s", name, ns)
+            log.info("  [dry-run] kubectl %s", " ".join(cmd))
         elif _is_kubectl_available():
-            _run_kubectl(["delete", "inferencegatewayroute", name, "-n", ns, "--ignore-not-found=true"])
+            _run_kubectl(cmd)
 
     for name in sorted(removed_endpoints):
         endpoint = old_endpoints.get(name) or {}
         ns = endpoint.get("namespace", default_ns)
-        log.info("Removing ModelEndpoint '%s' in namespace '%s'...", name, ns)
+        log.info("Removing ModelEndpoint '%s'...", name)
+        cmd = ["delete", "modelendpoint", name, "--ignore-not-found=true"]
+        if ns:
+            cmd.extend(["-n", ns])
         if dry_run:
-            log.info("  [dry-run] kubectl delete modelendpoint %s -n %s", name, ns)
+            log.info("  [dry-run] kubectl %s", " ".join(cmd))
         elif _is_kubectl_available():
-            _run_kubectl(["delete", "modelendpoint", name, "-n", ns, "--ignore-not-found=true"])
+            _run_kubectl(cmd)
 
 
 def _is_kubectl_available() -> bool:
