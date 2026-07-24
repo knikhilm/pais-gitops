@@ -536,7 +536,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.dry_run:
         client = pc.PAISClient.offline(base_url)
     else:
-        client = pc.PAISClient(base_url, pc.build_auth(auth_cfg), verify_ssl=verify_ssl)
+        client = pc.PAISClient(base_url, pc.build_auth(auth_cfg, verify_ssl=verify_ssl), verify_ssl=verify_ssl)
 
     try:
         ds_name_to_id = apply_data_sources(client, cfg.get("data_sources", []), args.dry_run)

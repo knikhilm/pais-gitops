@@ -17,7 +17,7 @@ pais:
     scope: "openid"
     username: "${PAIS_USERNAME}"
     password: "${PAIS_PASSWORD}"
-    verify_ssl: true
+    verify_ssl: false
   rex_discovery_timeout_seconds: 30
 
   # ----------------------------------------------------------
