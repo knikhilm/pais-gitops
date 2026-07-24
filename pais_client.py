@@ -152,6 +152,8 @@ class OAuth2PasswordAuth(httpx.Auth):
         }
         with httpx.Client(verify=self.verify_ssl, timeout=30) as client:
             resp = client.post(self.token_url, data=data)
+            if resp.is_error:
+                log.error("Token fetch from '%s' failed [%d]: %s", self.token_url, resp.status_code, resp.text)
             resp.raise_for_status()
             token_data = resp.json()
             token = token_data.get("access_token")
