@@ -141,7 +141,8 @@ class OAuth2PasswordAuth(httpx.Auth):
     """
     Custom OAuth2 Resource Owner Password Credentials Auth for httpx.
     Obtains and automatically refreshes Bearer tokens using username & password.
-    Compatible with Authentik, Keycloak, Okta, and generic OIDC providers.
+    Supports standard OIDC ROPC grant, Client Credentials grant, and full 6-step
+    Authentik Flow Executor API App Password generation.
     """
 
     def __init__(
@@ -163,17 +164,108 @@ class OAuth2PasswordAuth(httpx.Auth):
         self.verify_ssl = verify_ssl
         self._access_token: str | None = None
 
+    def _generate_authentik_app_password(self, base_url: str) -> str | None:
+        """
+        Programmatic App Password Generation via Authentik Flow & Core API.
+        Executes the 6-step Authentik authentication flow to generate a non-expiring App Password key
+        using user credentials when direct password grant is rejected.
+        """
+        import uuid
+        base_authentik_url = base_url.rstrip("/")
+        log.info("Executing 6-step Authentik Flow Executor API to generate App Password at '%s'...", base_authentik_url)
+
+        with httpx.Client(verify=self.verify_ssl, follow_redirects=True, timeout=30) as session:
+            try:
+                # Step 1: Initialize the Authentication Flow (fetches cookies and CSRF)
+                flow_url = f"{base_authentik_url}/api/v3/flows/executor/default-authentication-flow/?query=next%3D%2F"
+                r1 = session.get(flow_url)
+                if r1.is_error:
+                    log.warning("  Authentik Step 1 (init flow) failed [%d]: %s", r1.status_code, r1.text)
+                    return None
+
+                csrf_token = session.cookies.get("authentik_csrf") or session.cookies.get("csrftoken") or ""
+
+                headers = {
+                    "Content-Type": "application/json",
+                    "Referer": f"{base_authentik_url}/",
+                }
+                if csrf_token:
+                    headers["X-Authentik-CSRF"] = csrf_token
+
+                # Step 2: Submit Username
+                r2 = session.post(flow_url, json={"uid_field": self.username}, headers=headers)
+                if r2.is_error:
+                    log.warning("  Authentik Step 2 (submit username) failed [%d]: %s", r2.status_code, r2.text)
+                    return None
+
+                csrf_token = session.cookies.get("authentik_csrf") or session.cookies.get("csrftoken") or csrf_token
+                if csrf_token:
+                    headers["X-Authentik-CSRF"] = csrf_token
+
+                # Step 3: Submit Password
+                r3 = session.post(flow_url, json={"password": self.password}, headers=headers)
+                if r3.is_error:
+                    log.warning("  Authentik Step 3 (submit password) failed [%d]: %s", r3.status_code, r3.text)
+                    return None
+
+                csrf_token = session.cookies.get("authentik_csrf") or session.cookies.get("csrftoken") or csrf_token
+                if csrf_token:
+                    headers["X-Authentik-CSRF"] = csrf_token
+
+                # Step 4: Get Current Authenticated User ID (pk)
+                me_url = f"{base_authentik_url}/api/v3/core/users/me/"
+                r4 = session.get(me_url, headers=headers)
+                if r4.is_error:
+                    log.warning("  Authentik Step 4 (get user pk) failed [%d]: %s", r4.status_code, r4.text)
+                    return None
+
+                user_pk = r4.json().get("user", {}).get("pk")
+                if not user_pk:
+                    log.warning("  Authentik Step 4 failed: 'pk' not found in response: %s", r4.text)
+                    return None
+
+                # Step 5: Create App Password Token
+                token_identifier = f"pais-app-pwd-{uuid.uuid4().hex[:8]}"
+                tokens_url = f"{base_authentik_url}/api/v3/core/tokens/"
+                token_payload = {
+                    "identifier": token_identifier,
+                    "intent": "app_password",
+                    "user": user_pk,
+                    "expiring": False,
+                }
+                r5 = session.post(tokens_url, json=token_payload, headers=headers)
+                if r5.is_error and r5.status_code != 201:
+                    log.warning("  Authentik Step 5 (create app password) failed [%d]: %s", r5.status_code, r5.text)
+                    return None
+
+                # Step 6: View the Generated App Password Key
+                view_key_url = f"{base_authentik_url}/api/v3/core/tokens/{token_identifier}/view_key/"
+                r6 = session.get(view_key_url, headers=headers)
+                if r6.is_error:
+                    log.warning("  Authentik Step 6 (view key) failed [%d]: %s", r6.status_code, r6.text)
+                    return None
+
+                app_key = r6.json().get("key")
+                if app_key:
+                    log.info("  Successfully generated Authentik App Password key via 6-step flow API!")
+                    return app_key
+            except Exception as exc:
+                log.warning("  Authentik 6-step flow exception: %s", exc)
+
+        return None
+
     def _fetch_token(self) -> str:
+        req_scope = self.scope or "openid groups offline_access"
+
         with httpx.Client(verify=self.verify_ssl, timeout=30) as client:
-            # --- Strategy 1: Standard OIDC Form POST (grant_type=password) ---
+            # --- Strategy 1: Standard OIDC ROPC Grant (grant_type=password) ---
             data1: dict[str, str] = {
                 "grant_type": "password",
                 "client_id": self.client_id,
                 "username": self.username,
                 "password": self.password,
+                "scope": req_scope,
             }
-            if self.scope:
-                data1["scope"] = self.scope
             if self.client_secret:
                 data1["client_secret"] = self.client_secret
 
@@ -184,82 +276,72 @@ class OAuth2PasswordAuth(httpx.Auth):
                 if token:
                     return token
 
-            # --- Strategy 2: Clean OIDC Form POST with basic client_id + username + password ---
-            log.info("OIDC token fetch strategy 1 failed [%d]. Trying clean form payload...", resp1.status_code)
-            data2 = {
-                "grant_type": "password",
-                "client_id": self.client_id,
-                "username": self.username,
-                "password": self.password,
-            }
-            resp2 = client.post(self.token_url, data=data2)
-            if resp2.status_code == 200:
-                token_data = resp2.json()
-                token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
-                if token:
-                    return token
+            # --- Strategy 2: Client Credentials Grant (M2M) if client_secret provided ---
+            if self.client_secret:
+                log.info("OIDC ROPC failed [%d]. Trying Client Credentials grant...", resp1.status_code)
+                data_cc = {
+                    "grant_type": "client_credentials",
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "scope": req_scope,
+                }
+                resp_cc = client.post(self.token_url, data=data_cc)
+                if resp_cc.status_code == 200:
+                    token_data = resp_cc.json()
+                    token = token_data.get("access_token") or token_data.get("token")
+                    if token:
+                        return token
 
-            # --- Strategy 3: OIDC Form POST with Basic Auth header ---
-            log.info("OIDC token fetch strategy 2 failed [%d]. Trying Basic Auth header...", resp2.status_code)
-            resp3 = client.post(
-                self.token_url,
-                data={"grant_type": "password", "username": self.username, "password": self.password},
-                auth=(self.client_id, self.client_secret or ""),
-            )
-            if resp3.status_code == 200:
-                token_data = resp3.json()
-                token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
-                if token:
-                    return token
+            # --- Strategy 3: 6-Step Programmatic Authentik App Password Flow ---
+            if "/application/o/" in self.token_url or "/api/v3/" in self.token_url:
+                base_auth_url = self.token_url.split("/application/o/")[0].split("/api/v3/")[0]
+                app_password_key = self._generate_authentik_app_password(base_auth_url)
+                if app_password_key:
+                    # Exchange generated App Password Key at OIDC Token Endpoint
+                    log.info("Exchanging generated Authentik App Password key at OIDC token endpoint...")
+                    data_app = {
+                        "grant_type": "password",
+                        "client_id": self.client_id,
+                        "username": self.username,
+                        "password": app_password_key,
+                        "scope": req_scope,
+                    }
+                    if self.client_secret:
+                        data_app["client_secret"] = self.client_secret
 
-            # --- Strategy 4: JSON POST payload ---
-            log.info("OIDC token fetch strategy 3 failed [%d]. Trying JSON payload token login...", resp3.status_code)
-            json_data = {
-                "grant_type": "password",
-                "client_id": self.client_id,
-                "username": self.username,
-                "password": self.password,
-            }
-            resp4 = client.post(self.token_url, json=json_data)
-            if resp4.status_code in (200, 201):
-                token_data = resp4.json()
-                token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
-                if token:
-                    return token
-
-            # --- Strategy 5: Direct Authentik API Token Login endpoint if URL matches ---
-            if "/application/o/" in self.token_url:
-                authentik_api_url = self.token_url.split("/application/o/")[0] + "/api/v3/auth/login/"
-                log.info("Trying direct Authentik API login at '%s'...", authentik_api_url)
-                try:
-                    resp5 = client.post(authentik_api_url, json={"username": self.username, "password": self.password})
-                    if resp5.status_code in (200, 201):
-                        token_data = resp5.json()
-                        token = token_data.get("token") or token_data.get("access_token") or token_data.get("key")
+                    resp_app = client.post(self.token_url, data=data_app)
+                    if resp_app.status_code == 200:
+                        token_data = resp_app.json()
+                        token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
                         if token:
+                            log.info("Successfully acquired Bearer token using generated App Password!")
                             return token
-                except Exception as exc:
-                    log.debug("Authentik API login fallback exception: %s", exc)
 
-            # Log error from best attempt
-            last_resp = resp2 if resp2.is_error else resp1
-            log.error("Token fetch from '%s' failed [%d]: %s", self.token_url, last_resp.status_code, last_resp.text)
-            log.error(
-                "Attempted authentication parameters: client_id='%s', username='%s', token_url='%s'",
-                self.client_id, self.username, self.token_url,
-            )
-            if "invalid_grant" in last_resp.text.lower():
-                log.error(
-                    "Troubleshooting Authentik / OIDC 'invalid_grant':\n"
-                    "  1. Verify PAIS_USERNAME and PAIS_PASSWORD in GitHub Secrets are correct.\n"
-                    "  2. In Authentik, ensure 'Direct Access Grants' (Resource Owner Password Flow) is enabled on the Provider.\n"
-                    "  3. Verify PAIS_CLIENT_ID matches the Authentik OAuth2 Provider client_id."
-                )
-            last_resp.raise_for_status()
-            token_data = last_resp.json()
+                    log.info("Using generated Authentik App Password key directly as Bearer token.")
+                    return app_password_key
+
+            # --- Strategy 4: Clean OIDC Form POST without scope ---
+            log.info("Trying clean OIDC form payload...")
+            data_clean = {
+                "grant_type": "password",
+                "client_id": self.client_id,
+                "username": self.username,
+                "password": self.password,
+            }
+            resp_clean = client.post(self.token_url, data=data_clean)
+            if resp_clean.status_code == 200:
+                token_data = resp_clean.json()
+                token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
+                if token:
+                    return token
+
+            # Log failure details
+            log.error("OIDC Token fetch from '%s' failed [%d]: %s", self.token_url, resp1.status_code, resp1.text)
+            resp1.raise_for_status()
+            token_data = resp1.json()
             token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
             if not token:
-                raise ValueError(f"No access_token returned by {self.token_url}: {last_resp.text}")
+                raise ValueError(f"No access_token returned by {self.token_url}: {resp1.text}")
             return token
 
     def auth_flow(self, request: httpx.Request):
