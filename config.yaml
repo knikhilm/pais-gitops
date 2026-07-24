@@ -118,4 +118,4 @@ agents:
     knowledge_bases: []
     mcp_tools:
       - server: "lab-mcp-server"
-        tool_name: "get_current_timeArguments"
+        tool_name: "Get the current time"
