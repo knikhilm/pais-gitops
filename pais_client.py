@@ -164,73 +164,102 @@ class OAuth2PasswordAuth(httpx.Auth):
         self._access_token: str | None = None
 
     def _fetch_token(self) -> str:
-        # Attempt 1: OIDC Resource Owner Password Flow (grant_type=password)
-        data1: dict[str, str] = {
-            "grant_type": "password",
-            "client_id": self.client_id,
-            "username": self.username,
-            "password": self.password,
-        }
-        if self.client_secret:
-            data1["client_secret"] = self.client_secret
-        if self.scope:
-            data1["scope"] = self.scope
-
         with httpx.Client(verify=self.verify_ssl, timeout=30) as client:
-            resp = client.post(self.token_url, data=data1)
-            if resp.status_code == 200:
-                token_data = resp.json()
-                token = token_data.get("access_token") or token_data.get("token")
+            # --- Strategy 1: Standard OIDC Form POST (grant_type=password) ---
+            data1: dict[str, str] = {
+                "grant_type": "password",
+                "client_id": self.client_id,
+                "username": self.username,
+                "password": self.password,
+            }
+            if self.scope:
+                data1["scope"] = self.scope
+            if self.client_secret:
+                data1["client_secret"] = self.client_secret
+
+            resp1 = client.post(self.token_url, data=data1)
+            if resp1.status_code == 200:
+                token_data = resp1.json()
+                token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
                 if token:
                     return token
 
-            # Attempt 2: If Attempt 1 failed and scope/secret was included, retry clean payload
-            if (self.scope or self.client_secret) and resp.is_error:
-                log.info("OIDC token fetch attempt 1 failed [%d]. Retrying with clean payload...", resp.status_code)
-                data2 = {
-                    "grant_type": "password",
-                    "client_id": self.client_id,
-                    "username": self.username,
-                    "password": self.password,
-                }
-                resp2 = client.post(self.token_url, data=data2)
-                if resp2.status_code == 200:
-                    token_data = resp2.json()
-                    token = token_data.get("access_token") or token_data.get("token")
-                    if token:
-                        return token
-                resp = resp2
+            # --- Strategy 2: Clean OIDC Form POST with basic client_id + username + password ---
+            log.info("OIDC token fetch strategy 1 failed [%d]. Trying clean form payload...", resp1.status_code)
+            data2 = {
+                "grant_type": "password",
+                "client_id": self.client_id,
+                "username": self.username,
+                "password": self.password,
+            }
+            resp2 = client.post(self.token_url, data=data2)
+            if resp2.status_code == 200:
+                token_data = resp2.json()
+                token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
+                if token:
+                    return token
 
-            # Attempt 3: Authentik REST API token login (if token_url is Authentik REST API)
-            if "/api/" in self.token_url and resp.is_error:
-                log.info("Attempting Authentik REST API token login payload...")
-                json_data = {"username": self.username, "password": self.password}
-                resp3 = client.post(self.token_url, json=json_data)
-                if resp3.status_code in (200, 201):
-                    token_data = resp3.json()
-                    token = token_data.get("token") or token_data.get("access_token") or token_data.get("key")
-                    if token:
-                        return token
-                resp = resp3
-
-            log.error("OIDC/Authentik Token fetch from '%s' failed [%d]: %s", self.token_url, resp.status_code, resp.text)
-            log.error(
-                "OIDC Params: grant_type='password', client_id='%s', username='%s', client_secret_provided=%s, scope='%s'",
-                self.client_id, self.username, bool(self.client_secret), self.scope or ""
+            # --- Strategy 3: OIDC Form POST with Basic Auth header ---
+            log.info("OIDC token fetch strategy 2 failed [%d]. Trying Basic Auth header...", resp2.status_code)
+            resp3 = client.post(
+                self.token_url,
+                data={"grant_type": "password", "username": self.username, "password": self.password},
+                auth=(self.client_id, self.client_secret or ""),
             )
-            if "invalid_grant" in resp.text.lower():
+            if resp3.status_code == 200:
+                token_data = resp3.json()
+                token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
+                if token:
+                    return token
+
+            # --- Strategy 4: JSON POST payload ---
+            log.info("OIDC token fetch strategy 3 failed [%d]. Trying JSON payload token login...", resp3.status_code)
+            json_data = {
+                "grant_type": "password",
+                "client_id": self.client_id,
+                "username": self.username,
+                "password": self.password,
+            }
+            resp4 = client.post(self.token_url, json=json_data)
+            if resp4.status_code in (200, 201):
+                token_data = resp4.json()
+                token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
+                if token:
+                    return token
+
+            # --- Strategy 5: Direct Authentik API Token Login endpoint if URL matches ---
+            if "/application/o/" in self.token_url:
+                authentik_api_url = self.token_url.split("/application/o/")[0] + "/api/v3/auth/login/"
+                log.info("Trying direct Authentik API login at '%s'...", authentik_api_url)
+                try:
+                    resp5 = client.post(authentik_api_url, json={"username": self.username, "password": self.password})
+                    if resp5.status_code in (200, 201):
+                        token_data = resp5.json()
+                        token = token_data.get("token") or token_data.get("access_token") or token_data.get("key")
+                        if token:
+                            return token
+                except Exception as exc:
+                    log.debug("Authentik API login fallback exception: %s", exc)
+
+            # Log error from best attempt
+            last_resp = resp2 if resp2.is_error else resp1
+            log.error("Token fetch from '%s' failed [%d]: %s", self.token_url, last_resp.status_code, last_resp.text)
+            log.error(
+                "Attempted authentication parameters: client_id='%s', username='%s', token_url='%s'",
+                self.client_id, self.username, self.token_url,
+            )
+            if "invalid_grant" in last_resp.text.lower():
                 log.error(
                     "Troubleshooting Authentik / OIDC 'invalid_grant':\n"
                     "  1. Verify PAIS_USERNAME and PAIS_PASSWORD in GitHub Secrets are correct.\n"
                     "  2. In Authentik, ensure 'Direct Access Grants' (Resource Owner Password Flow) is enabled on the Provider.\n"
-                    "  3. Verify PAIS_CLIENT_ID matches the Authentik OAuth2 Provider client_id.\n"
-                    "  4. Alternatively, generate a static Authentik API Token and set 'PAIS_TOKEN' in GitHub Secrets."
+                    "  3. Verify PAIS_CLIENT_ID matches the Authentik OAuth2 Provider client_id."
                 )
-            resp.raise_for_status()
-            token_data = resp.json()
-            token = token_data.get("access_token") or token_data.get("token")
+            last_resp.raise_for_status()
+            token_data = last_resp.json()
+            token = token_data.get("access_token") or token_data.get("token") or token_data.get("key")
             if not token:
-                raise ValueError(f"No access_token returned by {self.token_url}: {resp.text}")
+                raise ValueError(f"No access_token returned by {self.token_url}: {last_resp.text}")
             return token
 
     def auth_flow(self, request: httpx.Request):
