@@ -58,148 +58,51 @@ kubernetes:
 # ============================================================
 # Requests to serve AI models on vSphere/VKS node pools using vLLM, Infinity, or LlamaCPP
 model_endpoints:
-  - name: "llama3-8b-endpoint"
+  - name: "gemma-2-9b-v6"
     namespace: "default"
     type: "Completions"                     # Completions | Embeddings
-    engine: "vLLM"                          # vLLM | Infinity | LlamaCPP
-    routing_name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    engine: "LlamaCPP"                          # vLLM | Infinity | LlamaCPP
+    routing_name: "gemma-2-9b-v6"
     replicas: 1
-    virtual_machine_class_name: "nvidia-a10g-gpu-class"
-    storage_class_name: "vsan-default-storage-class"
-    failure_domain: "zone-1"
+    virtual_machine_class_name: "best-effort-2xlarge"
+    storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
     model:
-      oci_ref: "harbor.internal.example.com/pais/models/meta-llama-3.1-8b-instruct:v1"
-      pull_secrets:
-        - name: "harbor-registry-secret"
+      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/gemma-2-9b-gguf:v1.0"
     inference_server_customization:
-      cli_args:
-        - "--max-model-len=8192"
-        - "--gpu-memory-utilization=0.90"
-      env_vars:
-        - name: "PAIH_MODEL_ID"
-          value: "meta-llama/Meta-Llama-3.1-8B-Instruct"
-      shared_memory_mount_size: "2Gi"
-
-  - name: "bge-small-endpoint"
-    namespace: "default"
-    type: "Embeddings"
-    engine: "Infinity"
-    routing_name: "BAAI/bge-small-en-v1.5"
-    replicas: 1
-    virtual_machine_class_name: "small-cpu-class"
-    storage_class_name: "vsan-default-storage-class"
-    model:
-      oci_ref: "harbor.internal.example.com/pais/models/bge-small-en-v1.5:v1"
-      pull_secrets:
-        - name: "harbor-registry-secret"
+      cli_args: ["-c 8192", "-t 8", "-tb 8", "-b 512", "--no-mmap", "--parallel 1", "--cache-type-k q8_0", "--jinja", "--flash-attn off"]
+      env_vars: []
 
 # ============================================================
 # 2. INFERENCE GATEWAY ROUTES (pais.vmware.com/v1alpha1 -> InferenceGatewayRoute)
 # ============================================================
 # Routing rules exposing models via the PAIS Data Plane API or routing to remote/external LLMs
 inference_routes:
-  - name: "route-llama3-8b"
+  - name: "gemma-2-9b-v6"
     namespace: "default"
     type: "Completions"
     engine: "vLLM"
     matches:
-      routing_name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+      routing_name: "gemma-2-9b-v6"
     backend:
-      http_base_url: "http://llama3-8b-endpoint.default.svc.cluster.local"
-      model_id: "meta-llama/Meta-Llama-3.1-8B-Instruct"
-      tls:
-        verification: "strict"
-
-  - name: "route-bge-small"
-    namespace: "default"
-    type: "Embeddings"
-    engine: "Infinity"
-    matches:
-      routing_name: "BAAI/bge-small-en-v1.5"
-    backend:
-      http_base_url: "http://bge-small-endpoint.default.svc.cluster.local"
-      model_id: "BAAI/bge-small-en-v1.5"
+      http_base_url: "http://gemma-2-9b-v6.default.svc.cluster.local"
+      model_id: "gemma-2-9b-v6"
       tls:
         verification: "strict"
 
 # ============================================================
 # 3. REST DATA SOURCES
 # ============================================================
-data_sources:
-  - name: "gdrive-product-docs"
-    description: "Product documentation stored in Google Drive"
-    type: "GOOGLE_DRIVE"
-    origin_url: "https://drive.google.com/drive/u/0/folders/REPLACE_WITH_FOLDER_ID"
-    credentials: "${GDRIVE_CREDENTIALS}"
-    test_connection: true
-
-  - name: "s3-support-articles"
-    description: "Support KB articles stored in an S3 bucket"
-    type: "S3"
-    origin_url: "s3://my-bucket/support-articles/"
-    credentials: "${S3_CREDENTIALS}"
-    test_connection: true
+data_sources: []
 
 # ============================================================
 # 4. KNOWLEDGE BASES & INDEXES
 # ============================================================
-knowledge_bases:
-  - name: "product-docs-kb"
-    description: "Knowledge base for product documentation"
-    data_origin_type: "DATA_SOURCES"
-    index_refresh_policy:
-      policy_type: "MANUAL"
-    data_sources:
-      - "gdrive-product-docs"
-    index:
-      name: "product-docs-index"
-      description: "Sentence-split index with small BGE embeddings"
-      embeddings_model_endpoint: "BAAI/bge-small-en-v1.5"
-      text_splitting: "SENTENCE"
-      chunk_size: 100
-      chunk_overlap: 0
-      trigger_indexing: true
-      wait_for_indexing: true
-      indexing_timeout_seconds: 300
-
-  - name: "support-articles-kb"
-    description: "Knowledge base for support articles"
-    data_origin_type: "DATA_SOURCES"
-    index_refresh_policy:
-      policy_type: "MANUAL"
-    data_sources:
-      - "s3-support-articles"
-    index:
-      name: "support-articles-index"
-      description: "Sentence-split index for support articles"
-      embeddings_model_endpoint: "BAAI/bge-small-en-v1.5"
-      text_splitting: "SENTENCE"
-      chunk_size: 150
-      chunk_overlap: 20
-      trigger_indexing: true
-      wait_for_indexing: true
-      indexing_timeout_seconds: 300
+knowledge_bases: []
 
 # ============================================================
 # 5. MCP SERVERS & TOOL APPROVALS
 # ============================================================
-mcp_servers:
-  - name: "weather-service"
-    description: "Real-time weather data MCP server"
-    url: "https://weather-mcp-server.example.com"
-    transport: "STREAMABLE_HTTP"
-    approve_tools:
-      - "get_current_weather"
-      - "get_forecast"
-
-  - name: "ticketing-service"
-    description: "Internal ticketing system MCP server"
-    url: "https://ticketing-mcp.internal.example.com"
-    transport: "STREAMABLE_HTTP"
-    approve_tools:
-      - "create_ticket"
-      - "search_tickets"
-      - "update_ticket"
+mcp_servers: []
 
 # ============================================================
 # 6. AGENTS
@@ -207,28 +110,15 @@ mcp_servers:
 agents:
   - name: "product-support-agent"
     description: "Agent with access to product docs and support articles plus live tools"
-    model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    model: "gemma-2-9b-v6"
     instructions: >
-      You are a helpful product-support assistant. Use the knowledge base to
-      answer questions about products and support cases. When users ask about
-      current weather or need to create/search tickets, use the appropriate
-      tools. Always be polite and concise.
+      You are a helpful product-support assistant. If you don't know the answer, say "I don't know".
     completion_role: "assistant"
     session_max_length: 10000
     session_summarization_strategy: "delete_oldest"
     chat_system_instruction_mode: "system-message"
     index_reference_format: "structured"
-    knowledge_bases:
-      - name: "product-docs-kb"
-        top_n: 5
-        similarity_cutoff: 0.65
-      - name: "support-articles-kb"
-        top_n: 3
-        similarity_cutoff: 0.70
+    knowledge_bases: []
     mcp_tools:
-      - server: "weather-service"
-        tool_name: "get_current_weather"
-      - server: "ticketing-service"
-        tool_name: "create_ticket"
-      - server: "ticketing-service"
-        tool_name: "search_tickets"
+      - server: "lab-mcp-server"
+        tool_name: "get_current_timeArguments"
