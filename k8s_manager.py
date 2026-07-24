@@ -350,15 +350,17 @@ def build_inference_gateway_route_crd(route_cfg: dict, default_namespace: str | 
 
     backend_cfg = route_cfg.get("backend", {})
     if backend_cfg:
-        backend_spec: dict[str, Any] = {
-            "httpBaseUrl": backend_cfg["http_base_url"],
-            "modelId": backend_cfg.get("model_id", "pais"),
-        }
+        backend_spec: dict[str, Any] = {}
+        if "http_base_url" in backend_cfg:
+            backend_spec["httpBaseUrl"] = backend_cfg["http_base_url"]
+        if "model_id" in backend_cfg:
+            backend_spec["modelId"] = backend_cfg["model_id"]
         if "tls" in backend_cfg:
             backend_spec["tls"] = backend_cfg["tls"]
         if "auth" in backend_cfg:
             backend_spec["auth"] = backend_cfg["auth"]
-        spec["backend"] = backend_spec
+        if backend_spec:
+            spec["backend"] = backend_spec
 
     metadata: dict[str, Any] = {
         "name": name,

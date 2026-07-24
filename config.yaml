@@ -71,17 +71,9 @@ model_endpoints:
 # ============================================================
 # 2. INFERENCE GATEWAY ROUTES (pais.vmware.com/v1alpha1 -> InferenceGatewayRoute)
 # ============================================================
-# Routing rules exposing models via the PAIS Data Plane API or routing to remote/external LLMs
-inference_routes:
-  - name: "gemma-2-9b-v6"
-    type: "Completions"
-    engine: "vLLM"
-    matches:
-      routing_name: "gemma-2-9b-v6"
-    backend:
-      model_id: "gemma-2-9b-v6"
-      tls:
-        verification: "strict"
+# Local ModelEndpoints automatically generate their own InferenceGatewayRoute.
+# Manual inference_routes are only required when routing to external/remote LLM endpoints.
+inference_routes: []
 
 # ============================================================
 # 3. REST DATA SOURCES
