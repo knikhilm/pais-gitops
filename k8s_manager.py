@@ -79,6 +79,19 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
         if v_tenant:
             cmd_create.extend(["--tenant-name", v_tenant])
 
+        # Execute vcf context create (handle existing context or warnings gracefully)
+        res_create = subprocess.run(cmd_create, capture_output=True, text=True)
+        if res_create.returncode == 0:
+            log.info("VCF context '%s' created successfully: %s", v_ctx_name, res_create.stdout.strip())
+        else:
+            log.info(
+                "Note on 'vcf context create' (exit code %d): %s %s",
+                res_create.returncode,
+                res_create.stdout.strip(),
+                res_create.stderr.strip(),
+            )
+
+        # Target context string
         if v_ns and v_project:
             full_context = f"{v_ctx_name}:{v_ns}:{v_project}"
         elif v_ns:
@@ -87,14 +100,18 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
             full_context = v_ctx_name
 
         cmd_use = ["vcf", "context", "use", full_context]
-        try:
-            res_create = subprocess.run(cmd_create, capture_output=True, text=True, check=True)
-            log.info("VCF context created: %s", res_create.stdout.strip())
-            res_use = subprocess.run(cmd_use, capture_output=True, text=True, check=True)
+        log.info("Switching VCF context via 'vcf context use %s'...", full_context)
+        res_use = subprocess.run(cmd_use, capture_output=True, text=True)
+        if res_use.returncode == 0:
             log.info("VCF context switched to '%s': %s", full_context, res_use.stdout.strip())
             return True
-        except Exception as exc:
-            log.warning("VCF context create/use failed: %s. Falling back to default kubeconfig...", exc)
+        else:
+            log.warning(
+                "VCF context use failed (exit code %d): %s %s. Falling back to default kubeconfig...",
+                res_use.returncode,
+                res_use.stdout.strip(),
+                res_use.stderr.strip(),
+            )
 
     # Method 2: ServiceAccount / Bearer Token Login
     k_server = os.environ.get("KUBE_SERVER", k8s_cfg.get("server", ""))
@@ -420,7 +437,7 @@ def apply_k8s_manifests(config: dict, manifests: list[dict[str, Any]], dry_run: 
     log.info("Applying %d Kubernetes manifests via kubectl apply...", len(manifests))
     try:
         res = subprocess.run(
-            ["kubectl", "apply", "-f", "-"],
+            ["kubectl", "apply", "--validate=false", "-f", "-"],
             input=yaml_content,
             text=True,
             capture_output=True,
