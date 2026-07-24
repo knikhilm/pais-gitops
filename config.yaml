@@ -13,7 +13,7 @@ pais:
   base_url: "https://10.138.217.33"              # REST Data/Agent Plane API endpoint
   auth:
     token_url: "https://auth01.vcf05.showcase.tmm.broadcom.lab/application/o/token/"
-    client_id: "$ipSk5yCnmjRUMjSW3YQ7ikPUhJDU82pi0uz9mC2i"
+    client_id: "ipSk5yCnmjRUMjSW3YQ7ikPUhJDU82pi0uz9mC2i"
     client_secret: "${PAIS_CLIENT_SECRET}"
     scope: "openid groups offline_access"
     username: "pais-user"
