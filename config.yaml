@@ -15,7 +15,7 @@ pais:
     token_url: "${PAIS_TOKEN_URL}"
     client_id: "${PAIS_CLIENT_ID}"
     client_secret: "${PAIS_CLIENT_SECRET}"
-    scope: "${PAIS_SCOPE}"
+    scope: "openid groups offline_access"
     username: "${PAIS_USERNAME}"
     password: "${PAIS_PASSWORD}"
     verify_ssl: false
