@@ -253,7 +253,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.dry_run:
         client = pc.PAISClient.offline(base_url)
     else:
-        client = pc.PAISClient(base_url, pc.build_auth(auth_cfg), verify_ssl=verify_ssl)
+        client = pc.PAISClient(base_url, pc.build_auth(auth_cfg, verify_ssl=verify_ssl), verify_ssl=verify_ssl)
 
     try:
         agents_removed = delete_removed_agents(client, old_cfg, new_cfg, args.dry_run)

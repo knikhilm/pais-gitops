@@ -44,6 +44,7 @@ jobs:
       PAIS_USERNAME: ${{ secrets.PAIS_USERNAME }}
       PAIS_PASSWORD: ${{ secrets.PAIS_PASSWORD }}
       PAIS_SCOPE: ${{ secrets.PAIS_SCOPE }}
+      PAIS_VERIFY_SSL: ${{ secrets.PAIS_VERIFY_SSL || 'false' }}
       # --- Data-source credentials referenced as ${...} in config.yaml ---
       GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
       S3_CREDENTIALS: ${{ secrets.S3_CREDENTIALS }}

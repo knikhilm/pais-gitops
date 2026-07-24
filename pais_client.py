@@ -120,20 +120,30 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     return base_url, auth_cfg, bool(verify_ssl)
 
 
-def build_auth(auth_cfg: dict) -> httpx_auth.OAuth2ResourceOwnerPasswordCredentials:
+def build_auth(auth_cfg: dict, verify_ssl: bool = True) -> httpx_auth.OAuth2ResourceOwnerPasswordCredentials:
     """Build an OIDC Resource-Owner-Password auth handler from config."""
     required = ("token_url", "client_id", "username", "password")
     missing = [k for k in required if not auth_cfg.get(k)]
     if missing:
         raise ValueError(f"Missing required auth settings: {', '.join(missing)}")
 
-    return httpx_auth.OAuth2ResourceOwnerPasswordCredentials(
-        token_url=auth_cfg["token_url"],
-        client_id=auth_cfg["client_id"],
-        username=auth_cfg["username"],
-        password=auth_cfg["password"],
-        scope=auth_cfg.get("scope", "openid"),
-    )
+    try:
+        return httpx_auth.OAuth2ResourceOwnerPasswordCredentials(
+            token_url=auth_cfg["token_url"],
+            client_id=auth_cfg["client_id"],
+            username=auth_cfg["username"],
+            password=auth_cfg["password"],
+            scope=auth_cfg.get("scope", "openid"),
+            verify=verify_ssl,
+        )
+    except TypeError:
+        return httpx_auth.OAuth2ResourceOwnerPasswordCredentials(
+            token_url=auth_cfg["token_url"],
+            client_id=auth_cfg["client_id"],
+            username=auth_cfg["username"],
+            password=auth_cfg["password"],
+            scope=auth_cfg.get("scope", "openid"),
+        )
 
 
 # ---------------------------------------------------------------------------
