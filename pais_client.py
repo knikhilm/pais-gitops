@@ -30,10 +30,14 @@ log = logging.getLogger("pais")
 # ---------------------------------------------------------------------------
 
 def setup_logging(verbose: bool = False) -> None:
+    import sys
+    handler = logging.StreamHandler(sys.stdout)
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s  %(levelname)-8s  %(message)s",
         datefmt="%H:%M:%S",
+        handlers=[handler],
+        force=True,
     )
 
 

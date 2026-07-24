@@ -37,6 +37,7 @@ jobs:
   reconcile:
     runs-on: pais-gitops
     env:
+      PYTHONUNBUFFERED: "1"
       # --- PAIS connection / OIDC (store these as repository secrets) ---
       PAIS_BASE_URL: ${{ secrets.PAIS_BASE_URL }}
       PAIS_TOKEN_URL: ${{ secrets.PAIS_TOKEN_URL }}

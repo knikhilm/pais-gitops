@@ -66,7 +66,10 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
     if v_server and (v_token or (v_user and v_pass)):
         # 1. Clean up existing context if present to ensure clean create
         log.info("Cleaning up existing VCF context '%s' if present...", v_ctx_name)
-        subprocess.run(["vcf", "context", "delete", v_ctx_name, "--yes"], capture_output=True, text=True)
+        try:
+            subprocess.run(["vcf", "context", "delete", v_ctx_name, "--yes"], capture_output=True, text=True, timeout=30)
+        except Exception:
+            pass
 
         # 2. Create VCF context
         log.info("Authenticating to VCF Cluster at %s via 'vcf context create'...", v_server)
@@ -85,16 +88,19 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
         if v_tenant:
             cmd_create.extend(["--tenant-name", v_tenant])
 
-        res_create = subprocess.run(cmd_create, capture_output=True, text=True)
-        if res_create.returncode == 0:
-            log.info("VCF context '%s' created successfully: %s", v_ctx_name, res_create.stdout.strip())
-        else:
-            log.warning(
-                "VCF context create warning/error (code %d):\nSTDOUT: %s\nSTDERR: %s",
-                res_create.returncode,
-                res_create.stdout.strip(),
-                res_create.stderr.strip(),
-            )
+        try:
+            res_create = subprocess.run(cmd_create, capture_output=True, text=True, timeout=60)
+            if res_create.returncode == 0:
+                log.info("VCF context '%s' created successfully: %s", v_ctx_name, res_create.stdout.strip())
+            else:
+                log.warning(
+                    "VCF context create warning/error (code %d):\nSTDOUT: %s\nSTDERR: %s",
+                    res_create.returncode,
+                    res_create.stdout.strip(),
+                    res_create.stderr.strip(),
+                )
+        except Exception as exc:
+            log.warning("VCF context create exception: %s", exc)
 
         # 3. Switch context
         if v_ns and v_project:
@@ -108,18 +114,20 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
         log.info("Switching VCF context via 'vcf context use %s'...", full_context)
 
         token_input = f"{v_token}\n" if v_token else (f"{v_pass}\n" if v_pass else None)
-        res_use = subprocess.run(cmd_use, input=token_input, capture_output=True, text=True)
-
-        if res_use.returncode == 0:
-            log.info("VCF context switched to '%s': %s", full_context, res_use.stdout.strip())
-            return True
-        else:
-            log.warning(
-                "VCF context use failed (code %d):\nSTDOUT: %s\nSTDERR: %s. Falling back to default kubeconfig...",
-                res_use.returncode,
-                res_use.stdout.strip(),
-                res_use.stderr.strip(),
-            )
+        try:
+            res_use = subprocess.run(cmd_use, input=token_input, capture_output=True, text=True, timeout=60)
+            if res_use.returncode == 0:
+                log.info("VCF context switched to '%s': %s", full_context, res_use.stdout.strip())
+                return True
+            else:
+                log.warning(
+                    "VCF context use failed (code %d):\nSTDOUT: %s\nSTDERR: %s. Falling back to default kubeconfig...",
+                    res_use.returncode,
+                    res_use.stdout.strip(),
+                    res_use.stderr.strip(),
+                )
+        except Exception as exc:
+            log.warning("VCF context use exception: %s", exc)
 
     # Method 2: ServiceAccount / Bearer Token Login
     k_server = os.environ.get("KUBE_SERVER", k8s_cfg.get("server", ""))
@@ -515,6 +523,7 @@ def wait_for_model_endpoints(
                     ["kubectl", "get", "modelendpoint", name, "-o", "json"],
                     capture_output=True,
                     text=True,
+                    timeout=30,
                 )
                 if res.returncode != 0:
                     still_pending.append(name)
