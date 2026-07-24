@@ -23,6 +23,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 import yaml
@@ -465,6 +466,84 @@ def apply_k8s_manifests(config: dict, manifests: list[dict[str, Any]], dry_run: 
         log.info("Kubectl apply output:\n%s", res.stdout.strip())
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"kubectl apply failed: {exc.stderr.strip()}") from exc
+
+
+def wait_for_model_endpoints(
+    config: dict,
+    dry_run: bool = False,
+    timeout_seconds: int = 3600,
+    poll_interval_seconds: int = 30,
+) -> None:
+    """
+    Poll applied ModelEndpoints until they reach Ready/Running/Deployed status
+    before proceeding to RAG/MCP/Agents. Models can take 30-40 minutes to deploy.
+    """
+    endpoints = config.get("model_endpoints", [])
+    if not endpoints:
+        return
+
+    if dry_run:
+        log.info("  [dry-run] Skipping wait for ModelEndpoints.")
+        return
+
+    if not _is_kubectl_available():
+        log.warning("kubectl not available; skipping ModelEndpoint status wait.")
+        return
+
+    pending_names = [me["name"] for me in endpoints if isinstance(me, dict) and me.get("name")]
+    if not pending_names:
+        return
+
+    log.info("")
+    log.info("==========================================================================")
+    log.info("Waiting for ModelEndpoints to deploy (%s) - Timeout: %d mins", ", ".join(pending_names), timeout_seconds // 60)
+    log.info("Models typically take 30 to 40 minutes to fully download and initialize.")
+    log.info("==========================================================================")
+
+    start_time = time.time()
+
+    while pending_names and (time.time() - start_time) < timeout_seconds:
+        still_pending = []
+        for name in pending_names:
+            try:
+                res = subprocess.run(
+                    ["kubectl", "get", "modelendpoint", name, "-o", "json"],
+                    capture_output=True,
+                    text=True,
+                )
+                if res.returncode != 0:
+                    still_pending.append(name)
+                    continue
+
+                obj = json.loads(res.stdout)
+                status = obj.get("status", {})
+                phase = str(status.get("phase", "")).lower()
+
+                conditions = status.get("conditions", [])
+                ready_condition = any(
+                    c.get("type") in ("Ready", "Available") and str(c.get("status")).lower() == "true"
+                    for c in conditions if isinstance(c, dict)
+                )
+
+                if phase in ("ready", "running", "deployed") or ready_condition:
+                    log.info("ModelEndpoint '%s' is READY! (phase='%s')", name, status.get("phase", "Ready"))
+                else:
+                    elapsed = int(time.time() - start_time)
+                    log.info("  ModelEndpoint '%s' deploying... status phase='%s' (%d mins %ds elapsed)",
+                             name, status.get("phase", "Pending"), elapsed // 60, elapsed % 60)
+                    still_pending.append(name)
+            except Exception as exc:
+                log.debug("Error checking status for ModelEndpoint '%s': %s", name, exc)
+                still_pending.append(name)
+
+        pending_names = still_pending
+        if pending_names:
+            time.sleep(poll_interval_seconds)
+
+    if pending_names:
+        log.warning("Timed out waiting for ModelEndpoints: %s. Proceeding with remaining steps.", pending_names)
+    else:
+        log.info("All ModelEndpoints are READY! Proceeding to Data Sources, Knowledge Bases, MCP Servers, and Agents.")
 
 
 def delete_removed_k8s_resources(old_config: dict, new_config: dict, dry_run: bool = False) -> None:
