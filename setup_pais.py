@@ -310,19 +310,29 @@ def apply_mcp_servers(client: pc.PAISClient, mcp_configs: list[dict], dry_run: b
 def approve_mcp_tools(
     client: pc.PAISClient,
     mcp_configs: list[dict],
+    agent_configs: list[dict],
     server_name_to_id: dict[str, str],
     dry_run: bool,
 ) -> dict[tuple[str, str], str]:
-    """Approve the tools named in config. Returns {(server, tool) -> tool_id}."""
+    """Approve the tools named in config (or referenced by agents). Returns {(server, tool) -> tool_id}."""
     log.info("=== Step 4: Approving MCP Tools ===")
     tool_key_to_id: dict[tuple[str, str], str] = {}
 
+    # Collect server -> tool requests from both mcp_servers config AND agents
+    requested_tools: dict[str, set[str]] = {}
     for srv in mcp_configs:
         srv_name = srv["name"]
-        tools_to_approve: list[str] = srv.get("approve_tools", [])
-        if not tools_to_approve:
-            continue
+        tools_to_approve = set(srv.get("approve_tools", []))
+        if tools_to_approve:
+            requested_tools.setdefault(srv_name, set()).update(tools_to_approve)
 
+    for ag in agent_configs:
+        for mcp_ref in ag.get("mcp_tools", []):
+            srv_name = mcp_ref["server"]
+            tool_name = mcp_ref["tool_name"]
+            requested_tools.setdefault(srv_name, set()).add(tool_name)
+
+    for srv_name, tools_to_approve in requested_tools.items():
         if dry_run:
             for tool_name in tools_to_approve:
                 tool_key_to_id[(srv_name, tool_name)] = f"dry-run-tool-{srv_name}-{tool_name}"
@@ -331,18 +341,30 @@ def approve_mcp_tools(
 
         srv_id = server_name_to_id.get(srv_name)
         if not srv_id:
-            log.warning("  Server '%s' not registered - skipping tool approval", srv_name)
-            continue
+            # Auto-discover pre-existing MCP server from PAIS API if not created in current run
+            existing_srv = client.find_by_name(pc.MCP_SERVERS, srv_name)
+            if existing_srv:
+                srv_id = existing_srv["id"]
+                server_name_to_id[srv_name] = srv_id
+                log.info("  Auto-discovered pre-existing MCP server '%s' on PAIS -> id=%s", srv_name, srv_id)
+            else:
+                log.warning("  Server '%s' not found on PAIS - skipping tool approval", srv_name)
+                continue
 
         available = client.list_all(pc.MCP_TOOLS, params={"server": srv_id})
-        tool_by_name = {t["name"]: t for t in available}
+        tool_by_name: dict[str, dict] = {}
+        for t in available:
+            for k in (t.get("name"), t.get("title"), t.get("description")):
+                if k:
+                    tool_by_name[k] = t
+                    tool_by_name[k.lower()] = t
 
         for tool_name in tools_to_approve:
-            tool = tool_by_name.get(tool_name)
+            tool = tool_by_name.get(tool_name) or tool_by_name.get(tool_name.lower())
             if not tool:
                 log.warning(
-                    "  Tool '%s' not found on server '%s' (available: %s) - skipping",
-                    tool_name, srv_name, list(tool_by_name.keys()),
+                    "  Tool '%s' not found on server '%s' (available names/titles: %s) - skipping",
+                    tool_name, srv_name, [t.get("title") or t.get("name") for t in available],
                 )
                 continue
 
@@ -429,7 +451,7 @@ def apply_agents(
 
     for ag in agent_configs:
         ag_name = ag["name"]
-        tools = _build_agent_tools(ag, ag_name, kb_name_to_rex_tool_id, mcp_tool_key_to_id)
+        tools = _build_agent_tools(client, ag, ag_name, kb_name_to_rex_tool_id, mcp_tool_key_to_id, dry_run)
 
         payload: dict[str, Any] = {
             "name": ag_name,
@@ -469,19 +491,34 @@ def apply_agents(
 
 
 def _build_agent_tools(
+    client: pc.PAISClient,
     ag: dict,
     ag_name: str,
     kb_name_to_rex_tool_id: dict[str, str],
     mcp_tool_key_to_id: dict[tuple[str, str], str],
+    dry_run: bool,
 ) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
 
     for kb_ref in ag.get("knowledge_bases", []):
         kb_name = kb_ref["name"]
         rex_tool_id = kb_name_to_rex_tool_id.get(kb_name)
+        if not rex_tool_id and not dry_run:
+            # Auto-discover pre-existing Knowledge Base REX search tool on PAIS
+            existing_kb = client.find_by_name(pc.KNOWLEDGE_BASES, kb_name)
+            if existing_kb and existing_kb.get("index", {}).get("id"):
+                idx_id = existing_kb["index"]["id"]
+                expected_rex_name = pc.rex_tool_name_for_index(idx_id)
+                builtin_tools = client.list_all(pc.MCP_TOOLS, params={"server": "built-in"})
+                rex_tool = next((t for t in builtin_tools if t.get("name") == expected_rex_name), None)
+                if rex_tool:
+                    rex_tool_id = rex_tool["id"]
+                    log.info("  Agent '%s': Auto-discovered REX tool for pre-existing KB '%s' -> id=%s", ag_name, kb_name, rex_tool_id)
+
         if not rex_tool_id:
             log.warning("  Agent '%s': REX tool for KB '%s' unavailable - skipping", ag_name, kb_name)
             continue
+
         entry: dict[str, Any] = {
             "link_type": "PAIS_KNOWLEDGE_BASE_INDEX_SEARCH_TOOL_LINK",
             "tool_id": rex_tool_id,
@@ -496,7 +533,26 @@ def _build_agent_tools(
     for mcp_ref in ag.get("mcp_tools", []):
         srv_name = mcp_ref["server"]
         tool_name = mcp_ref["tool_name"]
-        tool_id = mcp_tool_key_to_id.get((srv_name, tool_name))
+        tool_id = mcp_tool_key_to_id.get((srv_name, tool_name)) or mcp_tool_key_to_id.get((srv_name, tool_name.lower()))
+
+        if not tool_id and not dry_run:
+            # On-the-fly auto-discovery of pre-existing MCP server & tool on PAIS
+            existing_srv = client.find_by_name(pc.MCP_SERVERS, srv_name)
+            if existing_srv:
+                srv_id = existing_srv["id"]
+                available = client.list_all(pc.MCP_TOOLS, params={"server": srv_id})
+                matching_tool = next(
+                    (t for t in available if tool_name in (t.get("name"), t.get("title"), t.get("description")) or
+                     tool_name.lower() in (str(t.get("name")).lower(), str(t.get("title")).lower(), str(t.get("description")).lower())),
+                    None,
+                )
+                if matching_tool:
+                    tool_id = matching_tool["id"]
+                    if not matching_tool.get("is_approved"):
+                        client.post(pc.mcp_tool_approval(srv_id, tool_id), json_body={"is_approved": True})
+                        log.info("  Approved pre-existing tool '%s' on server '%s'", tool_name, srv_name)
+                    log.info("  Agent '%s': Auto-discovered MCP tool '%s' on '%s' -> id=%s", ag_name, tool_name, srv_name, tool_id)
+
         if not tool_id:
             log.warning(
                 "  Agent '%s': MCP tool '%s' on '%s' not approved/found - skipping",
@@ -543,7 +599,7 @@ def main(argv: list[str] | None = None) -> None:
         ds_name_to_id = apply_data_sources(client, cfg.get("data_sources", []), args.dry_run)
         kb_info = apply_knowledge_bases(client, cfg.get("knowledge_bases", []), ds_name_to_id, args.dry_run)
         server_name_to_id = apply_mcp_servers(client, cfg.get("mcp_servers", []), args.dry_run)
-        mcp_tool_key_to_id = approve_mcp_tools(client, cfg.get("mcp_servers", []), server_name_to_id, args.dry_run)
+        mcp_tool_key_to_id = approve_mcp_tools(client, cfg.get("mcp_servers", []), cfg.get("agents", []), server_name_to_id, args.dry_run)
         rex_timeout = pais_cfg.get("rex_discovery_timeout_seconds", 30)
         kb_rex = discover_rex_tools(client, kb_info, args.dry_run, rex_timeout)
         agents = apply_agents(client, cfg.get("agents", []), kb_rex, mcp_tool_key_to_id, args.dry_run)
