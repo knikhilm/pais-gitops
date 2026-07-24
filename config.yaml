@@ -14,7 +14,8 @@ pais:
   auth:
     token_url: "${PAIS_TOKEN_URL}"
     client_id: "${PAIS_CLIENT_ID}"
-    scope: "openid"
+    client_secret: "${PAIS_CLIENT_SECRET}"
+    scope: "${PAIS_SCOPE}"
     username: "${PAIS_USERNAME}"
     password: "${PAIS_PASSWORD}"
     verify_ssl: false
