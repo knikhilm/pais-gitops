@@ -8,6 +8,7 @@ every push in a GitOps pipeline.
 
 Provisioning order:
 
+  0. Kubernetes CRDs (ModelEndpoints & InferenceGatewayRoutes)
   1. Data Sources   (created if missing; optional connectivity test)
   2. Knowledge Bases + linked Data Sources
   3. Knowledge Base Indexes  (optional indexing trigger on first creation)
@@ -31,12 +32,35 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from typing import Any
 
+import k8s_manager as km
 import pais_client as pc
 from pais_client import log
+
+
+# ---------------------------------------------------------------------------
+# 0. Kubernetes Model Endpoints & Inference Gateway Routes
+# ---------------------------------------------------------------------------
+
+def apply_kubernetes_resources(config: dict, dry_run: bool, manifests_out_dir: str = "k8s-manifests") -> list[dict]:
+    """
+    Generate and apply Kubernetes Custom Resources for ModelEndpoints and InferenceGatewayRoutes.
+    """
+    log.info("=== Step 0: Kubernetes ModelEndpoints & InferenceGatewayRoutes ===")
+    manifests = km.generate_k8s_manifests(config)
+
+    if manifests:
+        out_file = os.path.join(manifests_out_dir, "pais-resources.yaml")
+        km.write_manifests_file(manifests, out_file)
+        km.apply_k8s_manifests(config, manifests, dry_run=dry_run)
+    else:
+        log.info("  No Kubernetes ModelEndpoints or InferenceGatewayRoutes configured in config.")
+
+    return manifests
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +228,6 @@ def _apply_index(client: pc.PAISClient, kb_name: str, kb_id: str, idx_cfg: dict)
     index_id = resp["id"]
     log.info("  Created index '%s' -> id=%s", idx_name, index_id)
 
-    # Trigger an initial indexing only on first creation, so re-runs don't
-    # repeatedly re-index unchanged data.
     if idx_cfg.get("trigger_indexing", False):
         log.info("  Triggering initial indexing for '%s'...", idx_name)
         indexing_resp = client.post(pc.kb_indexings(kb_id, index_id))
@@ -435,7 +457,6 @@ def apply_agents(
         existing = client.find_by_name(pc.AGENTS, ag_name)
         if existing:
             agent_id = existing["id"]
-            # Agents are updated by POSTing modifications to the agent id.
             resp = client.post(f"{pc.AGENTS}/{agent_id}", json_body=payload)
             log.info("  Updated agent '%s' -> id=%s (status=%s)", ag_name, agent_id, resp.get("status"))
         else:
@@ -504,10 +525,13 @@ def main(argv: list[str] | None = None) -> None:
 
     log.info("Loading config from '%s'...", args.config)
     cfg = pc.load_config(args.config)
-    pais_cfg = cfg.get("pais", {})
 
+    # Step 0: Kubernetes Model Endpoint & Inference Gateway Route reconciliation
+    k8s_manifests = apply_kubernetes_resources(cfg, args.dry_run)
+
+    pais_cfg = cfg.get("pais", {})
     base_url, auth_cfg, verify_ssl = pc.resolve_connection(pais_cfg)
-    log.info("Target PAIS instance: %s", base_url)
+    log.info("Target PAIS REST instance: %s", base_url)
 
     if args.dry_run:
         client = pc.PAISClient.offline(base_url)
@@ -525,6 +549,7 @@ def main(argv: list[str] | None = None) -> None:
 
         log.info("")
         log.info("=== Apply Complete ===")
+        log.info("K8s Manifests  : %d generated/applied", len(k8s_manifests))
         log.info("Data Sources   : %d", len(ds_name_to_id))
         log.info("Knowledge Bases: %d", len(kb_info))
         log.info("MCP Servers    : %d", len(server_name_to_id))
