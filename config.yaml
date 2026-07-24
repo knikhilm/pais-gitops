@@ -20,7 +20,6 @@ pais:
     verify_ssl: true
   rex_discovery_timeout_seconds: 30
 
-kubernetes:
   # ----------------------------------------------------------
   # Kubernetes Cluster Authentication & Login Options
   # ----------------------------------------------------------
