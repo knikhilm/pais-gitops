@@ -130,20 +130,37 @@ The tooling uses a three-part authentication model:
 - **Method C: GitHub Actions Kubeconfig Secret (`KUBECONFIG_DATA`)**  
   The workflow decodes `KUBECONFIG_DATA` to `~/.kube/config` before executing python scripts.
 
-### 2.2 OCI Registry / Harbor Model Pull Authentication
+### 2.2 OCI Registry / Harbor Model Pull Authentication (Self-Signed Certificates Support)
 
 Model weights are packaged as OCI artifacts (`ociRef`) in an internal registry like Harbor. For VKS worker nodes to pull these artifacts, a Kubernetes secret of type `kubernetes.io/dockerconfigjson` must exist in the target namespace.
 
-`k8s_manager.py` automatically generates and applies this secret manifest from registry credentials:
+#### Handling Self-Signed Certificates in Harbor
+
+If your Harbor registry uses self-signed SSL/TLS certificates, the framework supports two options:
+
+1. **Option A: Insecure Registry Mode (`insecure: true` / `HARBOR_INSECURE=true`)**
+   - Automatically attaches `pais.vmware.com/insecure-registry: "true"` labels and annotations to the `harbor-registry-secret`.
+   - Tells node pools and container engines to skip TLS certificate verification when pulling model weights.
+
+2. **Option B: Self-Signed CA Certificate Injection (`ca_cert` / `HARBOR_CA_CERT`)**
+   - Injects the PEM-encoded CA certificate string into `ca.crt` inside the `harbor-registry-secret`.
+   - Nodes and containers mount this CA certificate to establish a trusted TLS connection without disabling SSL verification.
+
+`k8s_manager.py` automatically generates and applies this secret manifest from registry configuration:
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
   name: harbor-registry-secret
   namespace: default
+  labels:
+    pais.vmware.com/insecure-registry: "true"
+  annotations:
+    pais.vmware.com/insecure-registry: "true"
 type: kubernetes.io/dockerconfigjson
 data:
   .dockerconfigjson: <base64-encoded-docker-auth>
+  ca.crt: <base64-encoded-ca-cert-pem>  # (Optional, included if HARBOR_CA_CERT is provided)
 ```
 `ModelEndpoint` resources reference this secret via `spec.model.pullSecrets: [{ name: "harbor-registry-secret" }]`.
 
@@ -348,6 +365,8 @@ Secret interpolation uses `${ENV_VAR_NAME}` syntax:
 | `HARBOR_REGISTRY` | Harbor / OCI Registry FQDN (e.g. `harbor.internal.example.com`) |
 | `HARBOR_USERNAME` | Harbor Registry Username |
 | `HARBOR_PASSWORD` | Harbor Registry Password |
+| `HARBOR_INSECURE` | Set to `true` to allow self-signed certificates or HTTP |
+| `HARBOR_CA_CERT` | (Optional) PEM-encoded self-signed CA certificate for Harbor |
 | `GDRIVE_CREDENTIALS` | Service Account JSON string for Google Drive |
 | `S3_CREDENTIALS` | S3 Access Key / Secret JSON string |
 | `KUBECONFIG_DATA` | (Optional) Base64-encoded Kubeconfig for direct `kubectl apply` |

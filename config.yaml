@@ -43,11 +43,15 @@ kubernetes:
   # Method 2: OCI / Harbor Registry Pull Secret Provisioning
   # Automatically creates a kubernetes.io/dockerconfigjson Secret in the namespace
   # so VKS worker nodes can pull OCI model artifacts (oci_ref) from Harbor
+  # Configured for self-signed certificates (insecure TLS or CA certificate)
   registry:
     server: "${HARBOR_REGISTRY}"            # e.g. harbor.internal.example.com
     username: "${HARBOR_USERNAME}"
     password: "${HARBOR_PASSWORD}"
     secret_name: "harbor-registry-secret"
+    insecure: true                          # Set to true for self-signed SSL certificates / insecure HTTP
+    insecure_skip_tls_verify: true          # Skip TLS verification when pulling model weights
+    ca_cert: "${HARBOR_CA_CERT}"            # (Optional) PEM self-signed CA cert content
 
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (pais.vmware.com/v1alpha1 -> ModelEndpoint)

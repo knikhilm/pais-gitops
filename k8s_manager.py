@@ -134,12 +134,23 @@ def build_docker_registry_secret(registry_cfg: dict, default_namespace: str = "d
     """
     Generate a Kubernetes secret of type `kubernetes.io/dockerconfigjson`
     used by VKS node pools to pull OCI model artifacts from Harbor/registries.
+
+    Accounts for self-signed certificates via:
+      1. `insecure` / `insecure_skip_tls_verify`: Adds `pais.vmware.com/insecure-registry` annotations/labels.
+      2. `ca_cert`: Injects `ca.crt` PEM certificate data into the secret.
     """
     server = os.environ.get("HARBOR_REGISTRY", os.environ.get("REGISTRY_SERVER", registry_cfg.get("server", "")))
     user = os.environ.get("HARBOR_USERNAME", os.environ.get("REGISTRY_USERNAME", registry_cfg.get("username", "")))
     password = os.environ.get("HARBOR_PASSWORD", os.environ.get("REGISTRY_PASSWORD", registry_cfg.get("password", "")))
     secret_name = registry_cfg.get("secret_name", "harbor-registry-secret")
     namespace = registry_cfg.get("namespace", default_namespace)
+
+    # Self-signed certificate handling options
+    insecure_env = os.environ.get("HARBOR_INSECURE", os.environ.get("REGISTRY_INSECURE", "")).lower() in ("true", "1", "yes")
+    insecure_cfg = registry_cfg.get("insecure", registry_cfg.get("insecure_skip_tls_verify", False))
+    is_insecure = insecure_env or bool(insecure_cfg)
+
+    ca_cert = os.environ.get("HARBOR_CA_CERT", registry_cfg.get("ca_cert", ""))
 
     if not server or not user or not password:
         return None
@@ -157,20 +168,36 @@ def build_docker_registry_secret(registry_cfg: dict, default_namespace: str = "d
     docker_json = json.dumps(docker_config)
     encoded_docker_json = base64.b64encode(docker_json.encode("utf-8")).decode("utf-8")
 
+    labels: dict[str, str] = {
+        "app.kubernetes.io/managed-by": "pais-gitops",
+    }
+    annotations: dict[str, str] = {}
+
+    if is_insecure:
+        labels["pais.vmware.com/insecure-registry"] = "true"
+        annotations["pais.vmware.com/insecure-registry"] = "true"
+
+    secret_data: dict[str, str] = {
+        ".dockerconfigjson": encoded_docker_json,
+    }
+
+    if ca_cert:
+        secret_data["ca.crt"] = base64.b64encode(ca_cert.strip().encode("utf-8")).decode("utf-8")
+
+    metadata: dict[str, Any] = {
+        "name": secret_name,
+        "namespace": namespace,
+        "labels": labels,
+    }
+    if annotations:
+        metadata["annotations"] = annotations
+
     return {
         "apiVersion": "v1",
         "kind": "Secret",
-        "metadata": {
-            "name": secret_name,
-            "namespace": namespace,
-            "labels": {
-                "app.kubernetes.io/managed-by": "pais-gitops",
-            },
-        },
+        "metadata": metadata,
         "type": "kubernetes.io/dockerconfigjson",
-        "data": {
-            ".dockerconfigjson": encoded_docker_json,
-        },
+        "data": secret_data,
     }
 
 

@@ -49,10 +49,12 @@ jobs:
       VCF_PASSWORD: ${{ secrets.VCF_PASSWORD || secrets.VSPHERE_PASSWORD }}
       VCF_NAMESPACE: ${{ secrets.VCF_NAMESPACE || secrets.VSPHERE_NAMESPACE }}
       VCF_PROJECT: ${{ secrets.VCF_PROJECT || secrets.PROJECT_NAME }}
-      # --- OCI / Harbor Registry Credentials for Image Pull Secret ---
+      # --- OCI / Harbor Registry Credentials for Image Pull Secret (Self-signed TLS support) ---
       HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
       HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
       HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+      HARBOR_INSECURE: ${{ secrets.HARBOR_INSECURE || 'true' }}
+      HARBOR_CA_CERT: ${{ secrets.HARBOR_CA_CERT }}
       DRY_RUN_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
 
     steps:
