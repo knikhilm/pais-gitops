@@ -81,10 +81,11 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
         description = ds.get("description", "")
         test_conn = ds.get("test_connection", False)
 
-        if isinstance(credentials, dict):
-            credentials = json.dumps(credentials)
-        elif isinstance(credentials, str):
-            credentials = credentials.strip()
+        if isinstance(credentials, str) and credentials.strip().startswith("{"):
+            try:
+                credentials = json.loads(credentials.strip())
+            except Exception:
+                credentials = credentials.strip()
 
         if dry_run:
             log.info("  [dry-run] ensure data source '%s' (type=%s)", name, ds_type)
@@ -99,9 +100,12 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
 
         if test_conn:
             log.info("  [%s] Testing connectivity...", name)
+            test_payload = {"origin_url": origin_url, "type": ds_type, "credentials": credentials}
+            if ds.get("options"):
+                test_payload["options"] = ds["options"]
             result = client.post(
                 f"{pc.DATA_SOURCES}/test-connection",
-                json_body={"origin_url": origin_url, "type": ds_type, "credentials": credentials},
+                json_body=test_payload,
             )
             if result.get("status") != "CONNECTIVITY_RESULT_SUCCESS":
                 raise RuntimeError(f"Connectivity test for data source '{name}' failed: {result}")
