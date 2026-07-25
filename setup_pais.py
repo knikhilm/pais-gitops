@@ -613,7 +613,8 @@ def apply_agents(
 
     for ag in agent_configs:
         ag_name = ag["name"]
-        tools = _build_agent_tools(client, ag, ag_name, kb_name_to_rex_tool_id, mcp_tool_key_to_id, dry_run)
+        existing = client.find_by_name(pc.AGENTS, ag_name) if not dry_run else None
+        tools = _build_agent_tools(client, ag, ag_name, kb_name_to_rex_tool_id, mcp_tool_key_to_id, existing, dry_run)
 
         payload: dict[str, Any] = {
             "name": ag_name,
@@ -628,6 +629,8 @@ def apply_agents(
         }
         if ag.get("index_reference_format") is not None:
             payload["index_reference_format"] = ag["index_reference_format"]
+        if ag.get("index_reference_delimiter") is not None:
+            payload["index_reference_delimiter"] = ag["index_reference_delimiter"]
         if ag.get("session_max_ttl") is not None:
             payload["session_max_ttl"] = ag["session_max_ttl"]
         if ag.get("metadata"):
@@ -639,7 +642,6 @@ def apply_agents(
             result_agents.append({"name": ag_name, "id": f"dry-run-agent-{ag_name}", "status": "DRY_RUN"})
             continue
 
-        existing = client.find_by_name(pc.AGENTS, ag_name)
         if existing:
             agent_id = existing["id"]
             resp = client.post(f"{pc.AGENTS}/{agent_id}", json_body=payload)
@@ -658,6 +660,7 @@ def _build_agent_tools(
     ag_name: str,
     kb_name_to_rex_tool_id: dict[str, str],
     mcp_tool_key_to_id: dict[tuple[str, str], str],
+    existing_agent: dict | None,
     dry_run: bool,
 ) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
@@ -666,9 +669,39 @@ def _build_agent_tools(
         if isinstance(kb_ref, str):
             kb_ref = {"name": kb_ref}
         kb_name = kb_ref["name"]
-        rex_tool_id = kb_name_to_rex_tool_id.get(kb_name)
+
+        # 1. Direct explicit tool_id in config.yaml
+        rex_tool_id = kb_ref.get("tool_id")
+
+        # 2. Look up in kb_name_to_rex_tool_id map from Step 5
+        if not rex_tool_id:
+            rex_tool_id = kb_name_to_rex_tool_id.get(kb_name)
+
+        # 3. Check existing agent on PAIS for attached KB search tool
+        if not rex_tool_id and existing_agent:
+            for t in existing_agent.get("tools", []):
+                if t.get("link_type") == "PAIS_KNOWLEDGE_BASE_INDEX_SEARCH_TOOL_LINK" and is_valid_uuid(t.get("tool_id")):
+                    rex_tool_id = t["tool_id"]
+                    log.info("  Agent '%s': Reused KB search tool UUID from existing agent -> %s", ag_name, rex_tool_id)
+                    break
+
+        # 4. Check all agents on PAIS for any attached KB search tool
         if not rex_tool_id and not dry_run:
-            # Auto-discover pre-existing Knowledge Base on PAIS
+            try:
+                all_agents = client.list_all(pc.AGENTS)
+                for other_ag in all_agents:
+                    for t in other_ag.get("tools", []):
+                        if t.get("link_type") == "PAIS_KNOWLEDGE_BASE_INDEX_SEARCH_TOOL_LINK" and is_valid_uuid(t.get("tool_id")):
+                            rex_tool_id = t["tool_id"]
+                            log.info("  Agent '%s': Reused KB search tool UUID from PAIS agent '%s' -> %s", ag_name, other_ag.get("name"), rex_tool_id)
+                            break
+                    if rex_tool_id:
+                        break
+            except Exception:
+                pass
+
+        # 5. Check pre-existing Knowledge Base on PAIS
+        if not rex_tool_id and not dry_run:
             existing_kb = client.find_by_name(pc.KNOWLEDGE_BASES, kb_name)
             if existing_kb:
                 kb_id = existing_kb.get("id")
