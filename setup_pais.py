@@ -637,9 +637,9 @@ def main(argv: list[str] | None = None) -> None:
 
     pais_cfg = cfg.get("pais", {})
     base_url, auth_cfg, verify_ssl = pc.resolve_connection(pais_cfg)
-    log.info("Target PAIS REST instance: %s", base_url)
+    log.info("Target PAIS REST instance connected.")
     if auth_cfg.get("token_url"):
-        log.info("Target IdP/Authentik Token URL: %s", auth_cfg["token_url"])
+        log.info("Target IdP/Authentik configured.")
 
     if args.dry_run:
         client = pc.PAISClient.offline(base_url)
