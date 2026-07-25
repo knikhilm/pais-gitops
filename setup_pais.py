@@ -313,37 +313,35 @@ def apply_mcp_servers(client: pc.PAISClient, mcp_configs: list[dict], dry_run: b
 # ---------------------------------------------------------------------------
 
 def extract_tool_keys(t: dict) -> list[str]:
-    """Extract all candidate names, titles, and descriptions from an MCP tool object."""
+    """Extract all candidate names, titles, origin names, and descriptions from an MCP tool object."""
     keys: list[str] = []
     # Direct top-level string fields
-    for f in ("name", "title", "displayName", "display_name", "description", "label"):
+    for f in ("name", "origin_name", "originName", "title", "displayName", "display_name", "description", "label", "tool_configuration_type"):
         v = t.get(f)
         if isinstance(v, str) and v.strip():
             keys.append(v.strip())
 
-    # Nested 'function' sub-dict (e.g. OpenAI / MCP tool schema)
-    fn = t.get("function")
-    if isinstance(fn, dict):
-        for f in ("name", "title", "displayName", "display_name", "description"):
-            v = fn.get(f)
+    # Stringified or dict 'annotations'
+    ann = t.get("annotations")
+    if isinstance(ann, str) and ann.strip().startswith("{"):
+        try:
+            ann = json.loads(ann)
+        except Exception:
+            ann = None
+    if isinstance(ann, dict):
+        for f in ("title", "name", "description", "label"):
+            v = ann.get(f)
             if isinstance(v, str) and v.strip():
                 keys.append(v.strip())
 
-    # Nested 'tool' sub-dict
-    tool_sub = t.get("tool")
-    if isinstance(tool_sub, dict):
-        for f in ("name", "title", "displayName", "display_name", "description"):
-            v = tool_sub.get(f)
-            if isinstance(v, str) and v.strip():
-                keys.append(v.strip())
-
-    # Nested 'meta' sub-dict
-    meta = t.get("meta")
-    if isinstance(meta, dict):
-        for f in ("name", "title", "displayName", "display_name", "description"):
-            v = meta.get(f)
-            if isinstance(v, str) and v.strip():
-                keys.append(v.strip())
+    # Nested 'function', 'tool', 'meta' sub-dicts
+    for sub_key in ("function", "tool", "meta"):
+        sub = t.get(sub_key)
+        if isinstance(sub, dict):
+            for f in ("name", "origin_name", "title", "displayName", "display_name", "description"):
+                v = sub.get(f)
+                if isinstance(v, str) and v.strip():
+                    keys.append(v.strip())
 
     return keys
 
@@ -488,7 +486,7 @@ def discover_rex_tools(
 
         # 1. ALWAYS query global tools endpoint FIRST (built-in/system tools)
         try:
-            for t in client.list_all(pc.MCP_TOOLS):
+            for t in client.list_all(pc.MCP_TOOLS, params={"limit": 999}):
                 all_tools.append(("", t))
         except Exception as exc:
             log.debug("Global MCP tools list query: %s", exc)
@@ -499,7 +497,7 @@ def discover_rex_tools(
             for srv in mcp_servers:
                 srv_id = srv.get("id")
                 if srv_id:
-                    srv_tools = client.list_all(pc.MCP_TOOLS, params={"server": srv_id})
+                    srv_tools = client.list_all(pc.MCP_TOOLS, params={"server": srv_id, "limit": 999})
                     for t in srv_tools:
                         all_tools.append((srv_id, t))
         except Exception as exc:
