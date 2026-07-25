@@ -491,7 +491,13 @@ def discover_rex_tools(
 
     missing = set(expected) - found
     if missing:
-        log.warning("  REX tools not found within %ds for: %s", rex_discovery_timeout, missing)
+        # Fallback: Use index ID or KB ID directly as tool_id for PAIS_KNOWLEDGE_BASE_INDEX_SEARCH_TOOL_LINK
+        for kb_name in missing:
+            info = kb_info.get(kb_name, {})
+            target_id = info.get("index_id") or info.get("kb_id")
+            if target_id:
+                kb_name_to_rex_tool_id[kb_name] = target_id
+                log.info("  Resolved KB '%s' search tool ID directly to index ID -> %s", kb_name, target_id)
 
     return kb_name_to_rex_tool_id
 
@@ -568,21 +574,14 @@ def _build_agent_tools(
         kb_name = kb_ref["name"]
         rex_tool_id = kb_name_to_rex_tool_id.get(kb_name)
         if not rex_tool_id and not dry_run:
-            # Auto-discover pre-existing Knowledge Base REX search tool on PAIS
+            # Auto-discover pre-existing Knowledge Base on PAIS
             existing_kb = client.find_by_name(pc.KNOWLEDGE_BASES, kb_name)
-            if existing_kb and existing_kb.get("index", {}).get("id"):
-                idx_id = existing_kb["index"]["id"]
-                expected_rex_name = pc.rex_tool_name_for_index(idx_id)
-                builtin_tools = client.list_all(pc.MCP_TOOLS, params={"server": "built-in"})
-                rex_tool = None
-                for t in builtin_tools:
-                    candidate_keys = extract_tool_keys(t)
-                    if any(expected_rex_name.lower() in k.lower() for k in candidate_keys) or expected_rex_name in str(t.get("id") or ""):
-                        rex_tool = t
-                        break
-                if rex_tool:
-                    rex_tool_id = rex_tool.get("id") or rex_tool.get("tool_id") or rex_tool.get("toolId")
-                    log.info("  Agent '%s': Auto-discovered REX tool for pre-existing KB '%s' -> id=%s", ag_name, kb_name, rex_tool_id)
+            if existing_kb:
+                if existing_kb.get("index", {}).get("id"):
+                    rex_tool_id = existing_kb["index"]["id"]
+                else:
+                    rex_tool_id = existing_kb.get("id")
+                log.info("  Agent '%s': Resolved search tool for pre-existing KB '%s' -> id=%s", ag_name, kb_name, rex_tool_id)
 
         if not rex_tool_id:
             log.warning("  Agent '%s': REX tool for KB '%s' unavailable - skipping", ag_name, kb_name)
