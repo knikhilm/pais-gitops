@@ -35,6 +35,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from typing import Any
 
 import k8s_manager as km
@@ -312,37 +313,35 @@ def apply_mcp_servers(client: pc.PAISClient, mcp_configs: list[dict], dry_run: b
 # ---------------------------------------------------------------------------
 
 def extract_tool_keys(t: dict) -> list[str]:
-    """Extract all candidate names, titles, and descriptions from an MCP tool object."""
+    """Extract all candidate names, titles, origin names, and descriptions from an MCP tool object."""
     keys: list[str] = []
     # Direct top-level string fields
-    for f in ("name", "title", "displayName", "display_name", "description", "label"):
+    for f in ("name", "origin_name", "originName", "title", "displayName", "display_name", "description", "label", "tool_configuration_type"):
         v = t.get(f)
         if isinstance(v, str) and v.strip():
             keys.append(v.strip())
 
-    # Nested 'function' sub-dict (e.g. OpenAI / MCP tool schema)
-    fn = t.get("function")
-    if isinstance(fn, dict):
-        for f in ("name", "title", "displayName", "display_name", "description"):
-            v = fn.get(f)
+    # Stringified or dict 'annotations'
+    ann = t.get("annotations")
+    if isinstance(ann, str) and ann.strip().startswith("{"):
+        try:
+            ann = json.loads(ann)
+        except Exception:
+            ann = None
+    if isinstance(ann, dict):
+        for f in ("title", "name", "description", "label"):
+            v = ann.get(f)
             if isinstance(v, str) and v.strip():
                 keys.append(v.strip())
 
-    # Nested 'tool' sub-dict
-    tool_sub = t.get("tool")
-    if isinstance(tool_sub, dict):
-        for f in ("name", "title", "displayName", "display_name", "description"):
-            v = tool_sub.get(f)
-            if isinstance(v, str) and v.strip():
-                keys.append(v.strip())
-
-    # Nested 'meta' sub-dict
-    meta = t.get("meta")
-    if isinstance(meta, dict):
-        for f in ("name", "title", "displayName", "display_name", "description"):
-            v = meta.get(f)
-            if isinstance(v, str) and v.strip():
-                keys.append(v.strip())
+    # Nested 'function', 'tool', 'meta' sub-dicts
+    for sub_key in ("function", "tool", "meta"):
+        sub = t.get(sub_key)
+        if isinstance(sub, dict):
+            for f in ("name", "origin_name", "title", "displayName", "display_name", "description"):
+                v = sub.get(f)
+                if isinstance(v, str) and v.strip():
+                    keys.append(v.strip())
 
     return keys
 
@@ -431,13 +430,38 @@ def approve_mcp_tools(
 # 6. Discover REX tools (built-in, auto-created per index)
 # ---------------------------------------------------------------------------
 
+def is_valid_uuid(val: Any) -> bool:
+    if not val or not isinstance(val, str):
+        return False
+    try:
+        uuid.UUID(val)
+        return True
+    except ValueError:
+        return False
+
+
+def _extract_all_uuids(obj: Any) -> list[str]:
+    """Recursively extract all valid UUID strings from a nested dict/list."""
+    uuids: list[str] = []
+    if isinstance(obj, dict):
+        for v in obj.values():
+            if isinstance(v, str) and is_valid_uuid(v):
+                uuids.append(v)
+            elif isinstance(v, (dict, list)):
+                uuids.extend(_extract_all_uuids(v))
+    elif isinstance(obj, list):
+        for item in obj:
+            uuids.extend(_extract_all_uuids(item))
+    return uuids
+
+
 def discover_rex_tools(
     client: pc.PAISClient,
     kb_info: dict[str, dict[str, str]],
     dry_run: bool,
     rex_discovery_timeout: int = 30,
 ) -> dict[str, str]:
-    """Poll built-in tools until each index's REX search tool appears."""
+    """Poll built-in/MCP tools across servers until each index's REX search tool appears."""
     log.info("=== Step 5: Discovering REX Search Tools ===")
     kb_name_to_rex_tool_id: dict[str, str] = {}
 
@@ -458,17 +482,105 @@ def discover_rex_tools(
     found: set[str] = set()
 
     while time.time() < deadline:
-        available = client.list_all(pc.MCP_TOOLS, params={"server": "built-in"})
-        by_name = {t["name"]: t for t in available}
+        all_tools: list[tuple[str, dict]] = []
 
-        for kb_name, expected_name in expected.items():
+        # 1. ALWAYS query global tools endpoint FIRST (built-in/system tools)
+        try:
+            for t in client.list_all(pc.MCP_TOOLS, params={"limit": 999}):
+                all_tools.append(("", t))
+        except Exception as exc:
+            log.debug("Global MCP tools list query: %s", exc)
+
+        # 2. Query tools per registered MCP server
+        try:
+            mcp_servers = client.list_all(pc.MCP_SERVERS)
+            for srv in mcp_servers:
+                srv_id = srv.get("id")
+                if srv_id:
+                    srv_tools = client.list_all(pc.MCP_TOOLS, params={"server": srv_id, "limit": 999})
+                    for t in srv_tools:
+                        all_tools.append((srv_id, t))
+        except Exception as exc:
+            log.debug("Server-specific MCP tools list query: %s", exc)
+
+        for kb_name, expected_rex_name in expected.items():
             if kb_name in found:
                 continue
-            entry = by_name.get(expected_name)
-            if entry:
-                kb_name_to_rex_tool_id[kb_name] = entry["id"]
+
+            info = kb_info.get(kb_name, {})
+            idx_id = info.get("index_id", "")
+            kb_id = info.get("kb_id", "")
+            idx_hex = idx_id.replace("-", "") if idx_id else ""
+
+            matching_srv_id = None
+            matching_tool = None
+
+            for srv_id, t in all_tools:
+                candidate_keys = extract_tool_keys(t)
+                t_id = str(t.get("id") or t.get("tool_id") or t.get("toolId") or "")
+
+                if any(
+                    expected_rex_name.lower() in k.lower()
+                    or (idx_hex and idx_hex.lower() in k.lower())
+                    or kb_name.lower() == k.lower()
+                    or (idx_id and idx_id in k)
+                    or (kb_id and kb_id in k)
+                    for k in candidate_keys
+                ) or (
+                    idx_id and idx_id in t_id
+                ) or (
+                    kb_id and kb_id in t_id
+                ) or (
+                    idx_hex and idx_hex in t_id
+                ):
+                    matching_srv_id = srv_id
+                    matching_tool = t
+                    break
+
+            if matching_tool:
+                tool_uuid = matching_tool.get("id") or matching_tool.get("tool_id") or matching_tool.get("toolId")
+                if is_valid_uuid(tool_uuid) and tool_uuid != kb_id and tool_uuid != idx_id:
+                    if matching_srv_id and not matching_tool.get("is_approved"):
+                        try:
+                            client.post(pc.mcp_tool_approval(matching_srv_id, tool_uuid), json_body={"is_approved": True})
+                            log.info("  Auto-approved REX search tool '%s' on server '%s'", tool_uuid, matching_srv_id)
+                        except Exception:
+                            pass
+                    kb_name_to_rex_tool_id[kb_name] = tool_uuid
+                    found.add(kb_name)
+                    log.info("  Found REX search tool for KB '%s' (tool_id=%s)", kb_name, tool_uuid)
+
+        # 3. Direct lookup on KB/Index details if not matched in tools
+        for kb_name in set(expected) - found:
+            info = kb_info.get(kb_name, {})
+            kb_id = info.get("kb_id", "")
+            idx_id = info.get("index_id", "")
+
+            found_uuid = None
+            if kb_id:
+                try:
+                    kb_detail = client.get(f"{pc.KNOWLEDGE_BASES}/{kb_id}")
+                    for val in _extract_all_uuids(kb_detail):
+                        if val != kb_id and val != idx_id:
+                            found_uuid = val
+                            break
+                except Exception:
+                    pass
+
+            if not found_uuid and kb_id and idx_id:
+                try:
+                    idx_detail = client.get(f"{pc.KNOWLEDGE_BASES}/{kb_id}/indexes/{idx_id}")
+                    for val in _extract_all_uuids(idx_detail):
+                        if val != kb_id and val != idx_id:
+                            found_uuid = val
+                            break
+                except Exception:
+                    pass
+
+            if found_uuid:
+                kb_name_to_rex_tool_id[kb_name] = found_uuid
                 found.add(kb_name)
-                log.info("  Found REX tool for KB '%s': '%s' (id=%s)", kb_name, entry["name"], entry["id"])
+                log.info("  Resolved KB '%s' search tool ID from KB/Index details -> %s", kb_name, found_uuid)
 
         if len(found) == len(expected):
             break
@@ -477,7 +589,7 @@ def discover_rex_tools(
 
     missing = set(expected) - found
     if missing:
-        log.warning("  REX tools not found within %ds for: %s", rex_discovery_timeout, missing)
+        log.warning("  REX search tool UUID not found for KBs: %s (will skip linking bad IDs)", missing)
 
     return kb_name_to_rex_tool_id
 
@@ -499,7 +611,8 @@ def apply_agents(
 
     for ag in agent_configs:
         ag_name = ag["name"]
-        tools = _build_agent_tools(client, ag, ag_name, kb_name_to_rex_tool_id, mcp_tool_key_to_id, dry_run)
+        existing = client.find_by_name(pc.AGENTS, ag_name) if not dry_run else None
+        tools = _build_agent_tools(client, ag, ag_name, kb_name_to_rex_tool_id, mcp_tool_key_to_id, existing, dry_run)
 
         payload: dict[str, Any] = {
             "name": ag_name,
@@ -514,6 +627,8 @@ def apply_agents(
         }
         if ag.get("index_reference_format") is not None:
             payload["index_reference_format"] = ag["index_reference_format"]
+        if ag.get("index_reference_delimiter") is not None:
+            payload["index_reference_delimiter"] = ag["index_reference_delimiter"]
         if ag.get("session_max_ttl") is not None:
             payload["session_max_ttl"] = ag["session_max_ttl"]
         if ag.get("metadata"):
@@ -525,7 +640,6 @@ def apply_agents(
             result_agents.append({"name": ag_name, "id": f"dry-run-agent-{ag_name}", "status": "DRY_RUN"})
             continue
 
-        existing = client.find_by_name(pc.AGENTS, ag_name)
         if existing:
             agent_id = existing["id"]
             resp = client.post(f"{pc.AGENTS}/{agent_id}", json_body=payload)
@@ -544,27 +658,61 @@ def _build_agent_tools(
     ag_name: str,
     kb_name_to_rex_tool_id: dict[str, str],
     mcp_tool_key_to_id: dict[tuple[str, str], str],
+    existing_agent: dict | None,
     dry_run: bool,
 ) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
 
     for kb_ref in ag.get("knowledge_bases", []):
+        if isinstance(kb_ref, str):
+            kb_ref = {"name": kb_ref}
         kb_name = kb_ref["name"]
-        rex_tool_id = kb_name_to_rex_tool_id.get(kb_name)
-        if not rex_tool_id and not dry_run:
-            # Auto-discover pre-existing Knowledge Base REX search tool on PAIS
-            existing_kb = client.find_by_name(pc.KNOWLEDGE_BASES, kb_name)
-            if existing_kb and existing_kb.get("index", {}).get("id"):
-                idx_id = existing_kb["index"]["id"]
-                expected_rex_name = pc.rex_tool_name_for_index(idx_id)
-                builtin_tools = client.list_all(pc.MCP_TOOLS, params={"server": "built-in"})
-                rex_tool = next((t for t in builtin_tools if t.get("name") == expected_rex_name), None)
-                if rex_tool:
-                    rex_tool_id = rex_tool["id"]
-                    log.info("  Agent '%s': Auto-discovered REX tool for pre-existing KB '%s' -> id=%s", ag_name, kb_name, rex_tool_id)
 
+        # 1. Direct explicit tool_id in config.yaml
+        rex_tool_id = kb_ref.get("tool_id")
+
+        # 2. Look up in kb_name_to_rex_tool_id map from Step 5
         if not rex_tool_id:
-            log.warning("  Agent '%s': REX tool for KB '%s' unavailable - skipping", ag_name, kb_name)
+            rex_tool_id = kb_name_to_rex_tool_id.get(kb_name)
+
+        # 3. Check existing agent on PAIS for attached KB search tool
+        if not rex_tool_id and existing_agent:
+            for t in existing_agent.get("tools", []):
+                if t.get("link_type") == "PAIS_KNOWLEDGE_BASE_INDEX_SEARCH_TOOL_LINK" and is_valid_uuid(t.get("tool_id")):
+                    rex_tool_id = t["tool_id"]
+                    log.info("  Agent '%s': Reused KB search tool UUID from existing agent -> %s", ag_name, rex_tool_id)
+                    break
+
+        # 4. Check all agents on PAIS for any attached KB search tool
+        if not rex_tool_id and not dry_run:
+            try:
+                all_agents = client.list_all(pc.AGENTS)
+                for other_ag in all_agents:
+                    for t in other_ag.get("tools", []):
+                        if t.get("link_type") == "PAIS_KNOWLEDGE_BASE_INDEX_SEARCH_TOOL_LINK" and is_valid_uuid(t.get("tool_id")):
+                            rex_tool_id = t["tool_id"]
+                            log.info("  Agent '%s': Reused KB search tool UUID from PAIS agent '%s' -> %s", ag_name, other_ag.get("name"), rex_tool_id)
+                            break
+                    if rex_tool_id:
+                        break
+            except Exception:
+                pass
+
+        # 5. Check pre-existing Knowledge Base on PAIS
+        if not rex_tool_id and not dry_run:
+            existing_kb = client.find_by_name(pc.KNOWLEDGE_BASES, kb_name)
+            if existing_kb:
+                kb_id = existing_kb.get("id")
+                idx_id = existing_kb.get("index", {}).get("id")
+                for val in _extract_all_uuids(existing_kb):
+                    if val != kb_id and val != idx_id:
+                        rex_tool_id = val
+                        break
+                if rex_tool_id:
+                    log.info("  Agent '%s': Resolved search tool UUID for pre-existing KB '%s' -> %s", ag_name, kb_name, rex_tool_id)
+
+        if not rex_tool_id or not is_valid_uuid(rex_tool_id):
+            log.warning("  Agent '%s': REX search tool UUID for KB '%s' unavailable - skipping KB search tool link", ag_name, kb_name)
             continue
 
         entry: dict[str, Any] = {

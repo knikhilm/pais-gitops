@@ -125,7 +125,8 @@ agents:
     session_max_length: 10000
     session_summarization_strategy: "delete_oldest"
     chat_system_instruction_mode: "system-message"
-    index_reference_format: "structured"
+    index_reference_format: "markdown"
+    index_reference_delimiter: "\npais-chat-marker\n"
     knowledge_bases:
       - name: "vcf-blogs"
         top_n: 3
