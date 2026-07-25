@@ -55,19 +55,7 @@ pais:
 # 1. KUBERNETES MODEL ENDPOINTS (pais.vmware.com/v1alpha1 -> ModelEndpoint)
 # ============================================================
 # Requests to serve AI models on vSphere/VKS node pools using vLLM, Infinity, or LlamaCPP
-model_endpoints:
-  - name: "gemma-2-9b-v6"
-    type: "Completions"                     # Completions | Embeddings
-    engine: "LlamaCPP"                          # vLLM | Infinity | LlamaCPP
-    routing_name: "gemma-2-9b-v6"
-    replicas: 1
-    virtual_machine_class_name: "best-effort-2xlarge"
-    storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
-    model:
-      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/gemma-2-9b-gguf:v1.0"
-    inference_server_customization:
-      cli_args: ["-c 8192", "-t 8", "-tb 8", "-b 512", "--no-mmap", "--parallel 1", "--cache-type-k q8_0", "--jinja", "--flash-attn off"]
-      env_vars: []
+model_endpoints: []
 
 # ============================================================
 # 3. REST DATA SOURCES
