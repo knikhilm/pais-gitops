@@ -307,6 +307,42 @@ def apply_mcp_servers(client: pc.PAISClient, mcp_configs: list[dict], dry_run: b
 # 5. Approve MCP Tools
 # ---------------------------------------------------------------------------
 
+def extract_tool_keys(t: dict) -> list[str]:
+    """Extract all candidate names, titles, and descriptions from an MCP tool object."""
+    keys: list[str] = []
+    # Direct top-level string fields
+    for f in ("name", "title", "displayName", "display_name", "description", "label"):
+        v = t.get(f)
+        if isinstance(v, str) and v.strip():
+            keys.append(v.strip())
+
+    # Nested 'function' sub-dict (e.g. OpenAI / MCP tool schema)
+    fn = t.get("function")
+    if isinstance(fn, dict):
+        for f in ("name", "title", "displayName", "display_name", "description"):
+            v = fn.get(f)
+            if isinstance(v, str) and v.strip():
+                keys.append(v.strip())
+
+    # Nested 'tool' sub-dict
+    tool_sub = t.get("tool")
+    if isinstance(tool_sub, dict):
+        for f in ("name", "title", "displayName", "display_name", "description"):
+            v = tool_sub.get(f)
+            if isinstance(v, str) and v.strip():
+                keys.append(v.strip())
+
+    # Nested 'meta' sub-dict
+    meta = t.get("meta")
+    if isinstance(meta, dict):
+        for f in ("name", "title", "displayName", "display_name", "description"):
+            v = meta.get(f)
+            if isinstance(v, str) and v.strip():
+                keys.append(v.strip())
+
+    return keys
+
+
 def approve_mcp_tools(
     client: pc.PAISClient,
     mcp_configs: list[dict],
@@ -336,6 +372,7 @@ def approve_mcp_tools(
         if dry_run:
             for tool_name in tools_to_approve:
                 tool_key_to_id[(srv_name, tool_name)] = f"dry-run-tool-{srv_name}-{tool_name}"
+                tool_key_to_id[(srv_name, tool_name.lower())] = f"dry-run-tool-{srv_name}-{tool_name}"
                 log.info("  [dry-run] approve tool '%s' on server '%s'", tool_name, srv_name)
             continue
 
@@ -352,29 +389,36 @@ def approve_mcp_tools(
                 continue
 
         available = client.list_all(pc.MCP_TOOLS, params={"server": srv_id})
-        tool_by_name: dict[str, dict] = {}
-        for t in available:
-            for k in (t.get("name"), t.get("title"), t.get("description")):
-                if k:
-                    tool_by_name[k] = t
-                    tool_by_name[k.lower()] = t
 
         for tool_name in tools_to_approve:
-            tool = tool_by_name.get(tool_name) or tool_by_name.get(tool_name.lower())
-            if not tool:
+            matching_tool = None
+            for t in available:
+                candidate_keys = extract_tool_keys(t)
+                if any(tool_name.lower() == k.lower() or tool_name.lower() in k.lower() for k in candidate_keys):
+                    matching_tool = t
+                    break
+
+            if not matching_tool and len(available) == 1:
+                matching_tool = available[0]
+                log.info("  Matched tool '%s' on server '%s' as the single available tool on server", tool_name, srv_name)
+
+            if not matching_tool:
+                avail_summary = [extract_tool_keys(t) or t for t in available]
                 log.warning(
-                    "  Tool '%s' not found on server '%s' (available names/titles: %s) - skipping",
-                    tool_name, srv_name, [t.get("title") or t.get("name") for t in available],
+                    "  Tool '%s' not found on server '%s' (available tools: %s) - skipping",
+                    tool_name, srv_name, avail_summary,
                 )
                 continue
 
-            tool_id = tool["id"]
-            if tool.get("is_approved"):
-                log.info("  Tool '%s' already approved (skip)", tool_name)
+            tool_id = matching_tool.get("id") or matching_tool.get("tool_id") or matching_tool.get("toolId")
+            if matching_tool.get("is_approved"):
+                log.info("  Tool '%s' already approved (id=%s)", tool_name, tool_id)
             else:
                 client.post(pc.mcp_tool_approval(srv_id, tool_id), json_body={"is_approved": True})
-                log.info("  Approved tool '%s' on server '%s'", tool_name, srv_name)
+                log.info("  Approved tool '%s' on server '%s' (id=%s)", tool_name, srv_name, tool_id)
+
             tool_key_to_id[(srv_name, tool_name)] = tool_id
+            tool_key_to_id[(srv_name, tool_name.lower())] = tool_id
 
     return tool_key_to_id
 
@@ -541,16 +585,21 @@ def _build_agent_tools(
             if existing_srv:
                 srv_id = existing_srv["id"]
                 available = client.list_all(pc.MCP_TOOLS, params={"server": srv_id})
-                matching_tool = next(
-                    (t for t in available if tool_name in (t.get("name"), t.get("title"), t.get("description")) or
-                     tool_name.lower() in (str(t.get("name")).lower(), str(t.get("title")).lower(), str(t.get("description")).lower())),
-                    None,
-                )
+                matching_tool = None
+                for t in available:
+                    candidate_keys = extract_tool_keys(t)
+                    if any(tool_name.lower() == k.lower() or tool_name.lower() in k.lower() for k in candidate_keys):
+                        matching_tool = t
+                        break
+
+                if not matching_tool and len(available) == 1:
+                    matching_tool = available[0]
+
                 if matching_tool:
-                    tool_id = matching_tool["id"]
+                    tool_id = matching_tool.get("id") or matching_tool.get("tool_id") or matching_tool.get("toolId")
                     if not matching_tool.get("is_approved"):
                         client.post(pc.mcp_tool_approval(srv_id, tool_id), json_body={"is_approved": True})
-                        log.info("  Approved pre-existing tool '%s' on server '%s'", tool_name, srv_name)
+                        log.info("  Approved pre-existing tool '%s' on server '%s' (id=%s)", tool_name, srv_name, tool_id)
                     log.info("  Agent '%s': Auto-discovered MCP tool '%s' on '%s' -> id=%s", ag_name, tool_name, srv_name, tool_id)
 
         if not tool_id:
@@ -560,7 +609,7 @@ def _build_agent_tools(
             )
             continue
         tools.append({"link_type": "GENERIC_MCP_TOOL_LINK", "tool_id": tool_id})
-        log.info("  Agent '%s': + MCP tool '%s' from '%s'", ag_name, tool_name, srv_name)
+        log.info("  Agent '%s': + MCP tool '%s' from '%s' (id=%s)", ag_name, tool_name, srv_name, tool_id)
 
     return tools
 
