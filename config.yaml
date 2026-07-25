@@ -127,10 +127,5 @@ agents:
     chat_system_instruction_mode: "system-message"
     index_reference_format: "markdown"
     index_reference_delimiter: "\npais-chat-marker\n"
-    knowledge_bases:
-      - name: "vcf-blogs"
-        top_n: 3
-        similarity_cutoff: 0.5
-    mcp_tools:
-      - server: "lab-mcp-server"
-        tool_name: "Get the current time"
+    knowledge_bases: []
+    mcp_tools: []
