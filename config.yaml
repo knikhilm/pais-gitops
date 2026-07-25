@@ -113,7 +113,7 @@ knowledge_bases:
 mcp_servers:
   - name: "lab-mcp-server"
     description: "Lab MCP server"
-    url: "http://10.97.1.144/sse"
+    url: "http://10.138.218.135/sse"
     transport: "SSE"
     approve_tools:
       - "Get the current time"
