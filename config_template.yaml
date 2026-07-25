@@ -136,9 +136,14 @@ data_sources:
   - name: "s3-support-articles"
     description: "Support KB articles stored in an S3 bucket"
     type: "S3"
-    origin_url: "s3://my-bucket/support-articles/"
-    credentials: "${S3_CREDENTIALS}"
-    test_connection: true
+    origin_url: "https://s3-storage-01.showcase.tmm.broadcom.lab:9000/"
+    credentials:
+      access_key: "${S3_ACCESS_KEY}"
+      secret_key: "${S3_SECRET_KEY}"
+    options:
+      bucket: "blogs"
+      prefix: ""
+    test_connection: false
 
 # ============================================================
 # 4. KNOWLEDGE BASES & INDEXES
