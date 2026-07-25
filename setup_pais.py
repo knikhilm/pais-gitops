@@ -459,16 +459,30 @@ def discover_rex_tools(
 
     while time.time() < deadline:
         available = client.list_all(pc.MCP_TOOLS, params={"server": "built-in"})
-        by_name = {t["name"]: t for t in available}
 
         for kb_name, expected_name in expected.items():
             if kb_name in found:
                 continue
-            entry = by_name.get(expected_name)
-            if entry:
-                kb_name_to_rex_tool_id[kb_name] = entry["id"]
+
+            matching_tool = None
+            for t in available:
+                candidate_keys = extract_tool_keys(t)
+                if any(expected_name.lower() == k.lower() or expected_name.lower() in k.lower() for k in candidate_keys):
+                    matching_tool = t
+                    break
+
+            if not matching_tool:
+                for t in available:
+                    t_id = str(t.get("id") or t.get("tool_id") or "")
+                    if expected_name in t_id or (expected_name.split(":")[-1] in t_id if ":" in expected_name else False):
+                        matching_tool = t
+                        break
+
+            if matching_tool:
+                tool_id = matching_tool.get("id") or matching_tool.get("tool_id") or matching_tool.get("toolId")
+                kb_name_to_rex_tool_id[kb_name] = tool_id
                 found.add(kb_name)
-                log.info("  Found REX tool for KB '%s': '%s' (id=%s)", kb_name, entry["name"], entry["id"])
+                log.info("  Found REX search tool for KB '%s' (id=%s)", kb_name, tool_id)
 
         if len(found) == len(expected):
             break
@@ -549,6 +563,8 @@ def _build_agent_tools(
     tools: list[dict[str, Any]] = []
 
     for kb_ref in ag.get("knowledge_bases", []):
+        if isinstance(kb_ref, str):
+            kb_ref = {"name": kb_ref}
         kb_name = kb_ref["name"]
         rex_tool_id = kb_name_to_rex_tool_id.get(kb_name)
         if not rex_tool_id and not dry_run:
@@ -558,9 +574,14 @@ def _build_agent_tools(
                 idx_id = existing_kb["index"]["id"]
                 expected_rex_name = pc.rex_tool_name_for_index(idx_id)
                 builtin_tools = client.list_all(pc.MCP_TOOLS, params={"server": "built-in"})
-                rex_tool = next((t for t in builtin_tools if t.get("name") == expected_rex_name), None)
+                rex_tool = None
+                for t in builtin_tools:
+                    candidate_keys = extract_tool_keys(t)
+                    if any(expected_rex_name.lower() in k.lower() for k in candidate_keys) or expected_rex_name in str(t.get("id") or ""):
+                        rex_tool = t
+                        break
                 if rex_tool:
-                    rex_tool_id = rex_tool["id"]
+                    rex_tool_id = rex_tool.get("id") or rex_tool.get("tool_id") or rex_tool.get("toolId")
                     log.info("  Agent '%s': Auto-discovered REX tool for pre-existing KB '%s' -> id=%s", ag_name, kb_name, rex_tool_id)
 
         if not rex_tool_id:
