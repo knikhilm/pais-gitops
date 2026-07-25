@@ -19,6 +19,7 @@ pais:
     username: "${PAIS_USERNAME}"
     password: "${PAIS_PASSWORD}"
     verify_ssl: false
+  mcp_tool_discovery_timeout_seconds: 60
   rex_discovery_timeout_seconds: 30
 
   # ----------------------------------------------------------

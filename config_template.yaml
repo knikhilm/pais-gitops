@@ -18,6 +18,7 @@ pais:
     username: "${PAIS_USERNAME}"
     password: "${PAIS_PASSWORD}"
     verify_ssl: true
+  mcp_tool_discovery_timeout_seconds: 60
   rex_discovery_timeout_seconds: 30
 
 kubernetes:

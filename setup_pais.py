@@ -352,8 +352,9 @@ def approve_mcp_tools(
     agent_configs: list[dict],
     server_name_to_id: dict[str, str],
     dry_run: bool,
+    mcp_discovery_timeout: int = 60,
 ) -> dict[tuple[str, str], str]:
-    """Approve the tools named in config (or referenced by agents). Returns {(server, tool) -> tool_id}."""
+    """Poll and approve the tools named in config (or referenced by agents). Returns {(server, tool) -> tool_id}."""
     log.info("=== Step 4: Approving MCP Tools ===")
     tool_key_to_id: dict[tuple[str, str], str] = {}
 
@@ -391,25 +392,48 @@ def approve_mcp_tools(
                 log.warning("  Server '%s' not found on PAIS - skipping tool approval", srv_name)
                 continue
 
-        available = client.list_all(pc.MCP_TOOLS, params={"server": srv_id})
+        deadline = time.time() + mcp_discovery_timeout
+        found_tools: dict[str, dict] = {}
+        available: list[dict] = []
+
+        while True:
+            try:
+                available = client.list_all(pc.MCP_TOOLS, params={"server": srv_id, "limit": 999})
+            except Exception as exc:
+                available = []
+                log.debug("Error querying MCP tools for server '%s': %s", srv_name, exc)
+
+            for tool_name in tools_to_approve:
+                if tool_name in found_tools:
+                    continue
+
+                matching_tool = None
+                for t in available:
+                    candidate_keys = extract_tool_keys(t)
+                    if any(tool_name.lower() == k.lower() or tool_name.lower() in k.lower() for k in candidate_keys):
+                        matching_tool = t
+                        break
+
+                if not matching_tool and len(available) == 1:
+                    matching_tool = available[0]
+
+                if matching_tool:
+                    found_tools[tool_name] = matching_tool
+
+            if len(found_tools) == len(tools_to_approve) or time.time() >= deadline:
+                break
+
+            missing = tools_to_approve - set(found_tools.keys())
+            log.info("  Waiting for MCP tools on server '%s': %s (retry in 5s)...", srv_name, missing)
+            time.sleep(5)
 
         for tool_name in tools_to_approve:
-            matching_tool = None
-            for t in available:
-                candidate_keys = extract_tool_keys(t)
-                if any(tool_name.lower() == k.lower() or tool_name.lower() in k.lower() for k in candidate_keys):
-                    matching_tool = t
-                    break
-
-            if not matching_tool and len(available) == 1:
-                matching_tool = available[0]
-                log.info("  Matched tool '%s' on server '%s' as the single available tool on server", tool_name, srv_name)
-
+            matching_tool = found_tools.get(tool_name)
             if not matching_tool:
                 avail_summary = [extract_tool_keys(t) or t for t in available]
                 log.warning(
-                    "  Tool '%s' not found on server '%s' (available tools: %s) - skipping",
-                    tool_name, srv_name, avail_summary,
+                    "  Tool '%s' not found on server '%s' after %ds (available tools: %s) - skipping",
+                    tool_name, srv_name, mcp_discovery_timeout, avail_summary,
                 )
                 continue
 
@@ -802,7 +826,8 @@ def main(argv: list[str] | None = None) -> None:
         ds_name_to_id = apply_data_sources(client, cfg.get("data_sources", []), args.dry_run)
         kb_info = apply_knowledge_bases(client, cfg.get("knowledge_bases", []), ds_name_to_id, args.dry_run)
         server_name_to_id = apply_mcp_servers(client, cfg.get("mcp_servers", []), args.dry_run)
-        mcp_tool_key_to_id = approve_mcp_tools(client, cfg.get("mcp_servers", []), cfg.get("agents", []), server_name_to_id, args.dry_run)
+        mcp_timeout = pais_cfg.get("mcp_tool_discovery_timeout_seconds", 60)
+        mcp_tool_key_to_id = approve_mcp_tools(client, cfg.get("mcp_servers", []), cfg.get("agents", []), server_name_to_id, args.dry_run, mcp_discovery_timeout=mcp_timeout)
         rex_timeout = pais_cfg.get("rex_discovery_timeout_seconds", 30)
         kb_rex = discover_rex_tools(client, kb_info, args.dry_run, rex_timeout)
         agents = apply_agents(client, cfg.get("agents", []), kb_rex, mcp_tool_key_to_id, args.dry_run)
