@@ -111,7 +111,7 @@ def fetch_pais_env(base_url: str, verify_ssl: bool = True) -> dict[str, Any] | N
             resp = client.get(env_url)
             if resp.status_code == 200:
                 data = resp.json()
-                log.info("Fetched PAIS instance config from '%s': %s", env_url, json.dumps(data))
+                log.info("Fetched PAIS instance config from '%s'", env_url)
                 return data
             else:
                 log.debug("Fetch '%s' returned status %d", env_url, resp.status_code)
@@ -414,21 +414,7 @@ class OAuth2PasswordAuth(httpx.Auth):
                 raise RuntimeError("Failed to acquire any authentication token from Authentik.")
 
             self._active_token = self._token_candidates[0]
-
-            log.info("Acquired %d Bearer token candidate(s). Active token len=%d",
-                     len(self._token_candidates), len(self._active_token))
-
-            for idx, cand in enumerate(self._token_candidates):
-                claims = decode_jwt_payload(cand)
-                if claims:
-                    log.info("  Candidate [%d] JWT Claims: iss='%s', aud='%s', sub='%s', user='%s', groups=%s, scope='%s'",
-                             idx, claims.get("iss"), claims.get("aud"), claims.get("sub"),
-                             claims.get("preferred_username") or claims.get("username"),
-                             claims.get("groups") or claims.get("roles"),
-                             claims.get("scope"))
-                else:
-                    log.info("  Candidate [%d]: Opaque token / Authentik API Key (len=%d)", idx, len(cand))
-
+            log.info("Successfully authenticated with Authentik (OIDC token acquired).")
             return self._active_token
 
     def auth_flow(self, request: httpx.Request):
@@ -444,7 +430,7 @@ class OAuth2PasswordAuth(httpx.Auth):
             for candidate in list(self._token_candidates):
                 if candidate == initial_token:
                     continue
-                log.info("PAIS API returned 401 with active token. Retrying with candidate token (len=%d)...", len(candidate))
+                log.debug("PAIS API returned 401 with active token. Retrying with candidate token...")
                 self._active_token = candidate
                 request.headers["Authorization"] = f"Bearer {self._active_token}"
                 response = yield request
