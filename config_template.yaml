@@ -129,14 +129,14 @@ data_sources:
   - name: "gdrive-product-docs"
     description: "Product documentation stored in Google Drive"
     type: "GOOGLE_DRIVE"
-    origin_url: "https://drive.google.com/drive/u/0/folders/REPLACE_WITH_FOLDER_ID"
+    origin_url: "${GDRIVE_ORIGIN_URL}"
     credentials: "${GDRIVE_CREDENTIALS}"
     test_connection: true
 
   - name: "s3-support-articles"
     description: "Support KB articles stored in an S3 bucket"
     type: "S3"
-    origin_url: "https://s3-storage-01.showcase.tmm.broadcom.lab:9000/"
+    origin_url: "${S3_ORIGIN_URL}"
     credentials:
       access_key: "${S3_ACCESS_KEY}"
       secret_key: "${S3_SECRET_KEY}"

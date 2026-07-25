@@ -50,7 +50,11 @@ jobs:
       PAIS_VERIFY_SSL: ${{ secrets.PAIS_VERIFY_SSL || 'false' }}
       # --- Data-source credentials referenced as ${...} in config.yaml ---
       GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+      GDRIVE_ORIGIN_URL: ${{ secrets.GDRIVE_ORIGIN_URL }}
       S3_CREDENTIALS: ${{ secrets.S3_CREDENTIALS }}
+      S3_ORIGIN_URL: ${{ secrets.S3_ORIGIN_URL }}
+      S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+      S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       # --- VCF CLI / Kubeconfig login secrets for K8s deployment ---
       KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
       VCF_ENDPOINT: ${{ secrets.VCF_ENDPOINT || secrets.VSPHERE_SERVER }}
