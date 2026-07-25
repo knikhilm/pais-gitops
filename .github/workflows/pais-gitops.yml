@@ -13,12 +13,6 @@ on:
       - "config.yaml"
       - "*.py"
       - ".github/workflows/pais-gitops.yml"
-  pull_request:
-    branches: [ main ]
-    paths:
-      - "config.yaml"
-      - "*.py"
-      - ".github/workflows/pais-gitops.yml"
   workflow_dispatch:
     inputs:
       dry_run:
