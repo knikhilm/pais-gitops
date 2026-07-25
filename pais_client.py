@@ -31,6 +31,10 @@ log = logging.getLogger("pais")
 
 def setup_logging(verbose: bool = False) -> None:
     import sys
+    # Silence third-party HTTP request/connection logging (httpx & httpcore) to avoid logging IPs/endpoints
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     handler = logging.StreamHandler(sys.stdout)
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -111,7 +115,7 @@ def fetch_pais_env(base_url: str, verify_ssl: bool = True) -> dict[str, Any] | N
             resp = client.get(env_url)
             if resp.status_code == 200:
                 data = resp.json()
-                log.info("Fetched PAIS instance config from '%s'", env_url)
+                log.info("Fetched PAIS instance configuration.")
                 return data
             else:
                 log.debug("Fetch '%s' returned status %d", env_url, resp.status_code)
@@ -218,7 +222,7 @@ class OAuth2PasswordAuth(httpx.Auth):
         """
         import uuid
         base_authentik_url = base_url.rstrip("/")
-        log.info("Executing Authentik Flow Executor & Core API to generate API Token and App Password at '%s'...", base_authentik_url)
+        log.info("Executing Authentik Flow Executor & Core API to generate API Token and App Password...")
 
         api_token_key: str | None = None
         app_password_key: str | None = None
@@ -548,7 +552,7 @@ class PAISClient:
 
         if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
-            log.info("GET '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
+            log.debug("GET endpoint returned %d HTML. Retrying fallback endpoint...", resp.status_code)
             resp = self._client.get(fallback_url, **kwargs)
             if resp.status_code < 400:
                 return resp.json()
@@ -563,7 +567,7 @@ class PAISClient:
 
         if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
-            log.info("POST '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
+            log.debug("POST endpoint returned %d HTML. Retrying fallback endpoint...", resp.status_code)
             resp = self._client.post(fallback_url, json=json_body, **kwargs)
             if resp.status_code < 400:
                 return resp.json()
@@ -578,7 +582,7 @@ class PAISClient:
 
         if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
-            log.info("PATCH '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
+            log.debug("PATCH endpoint returned %d HTML. Retrying fallback endpoint...", resp.status_code)
             resp = self._client.patch(fallback_url, json=json_body, **kwargs)
             if resp.status_code < 400:
                 return resp.json()
@@ -593,7 +597,7 @@ class PAISClient:
 
         if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
             fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
-            log.info("DELETE '%s' returned %d HTML. Retrying fallback endpoint '%s'...", full_url, resp.status_code, fallback_url)
+            log.debug("DELETE endpoint returned %d HTML. Retrying fallback endpoint...", resp.status_code)
             resp = self._client.delete(fallback_url, **kwargs)
             if resp.status_code < 400:
                 return resp.json()

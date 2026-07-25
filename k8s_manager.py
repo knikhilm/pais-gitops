@@ -72,7 +72,7 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
             pass
 
         # 2. Create VCF context
-        log.info("Authenticating to VCF Cluster at %s via 'vcf context create'...", v_server)
+        log.info("Authenticating to VCF Cluster via 'vcf context create'...")
         cmd_create = [
             "vcf", "context", "create", v_ctx_name,
             "--endpoint", v_server,
@@ -135,7 +135,7 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
     k_ns = os.environ.get("KUBE_NAMESPACE", k8s_cfg.get("namespace", "default"))
 
     if k_server and k_token:
-        log.info("Authenticating to K8s cluster at %s via ServiceAccount bearer token...", k_server)
+        log.info("Authenticating to K8s cluster via ServiceAccount bearer token...")
         try:
             subprocess.run(["kubectl", "config", "set-cluster", "pais-cluster", f"--server={k_server}", "--insecure-skip-tls-verify=true"], check=True, capture_output=True)
             subprocess.run(["kubectl", "config", "set-credentials", "pais-sa", f"--token={k_token}"], check=True, capture_output=True)
