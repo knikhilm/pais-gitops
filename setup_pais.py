@@ -458,7 +458,17 @@ def discover_rex_tools(
     found: set[str] = set()
 
     while time.time() < deadline:
-        available = client.list_all(pc.MCP_TOOLS, params={"server": "built-in"})
+        available: list[dict] = []
+        try:
+            available = client.list_all(pc.MCP_TOOLS)
+        except Exception:
+            pass
+
+        if not available:
+            try:
+                available = client.list_all(pc.MCP_TOOLS, params={"server": "built-in"})
+            except Exception:
+                pass
 
         for kb_name, expected_name in expected.items():
             if kb_name in found:
@@ -479,10 +489,11 @@ def discover_rex_tools(
                         break
 
             if matching_tool:
-                tool_id = matching_tool.get("id") or matching_tool.get("tool_id") or matching_tool.get("toolId")
-                kb_name_to_rex_tool_id[kb_name] = tool_id
-                found.add(kb_name)
-                log.info("  Found REX search tool for KB '%s' (id=%s)", kb_name, tool_id)
+                tool_id = matching_tool.get("id") or matching_tool.get("tool_id") or matching_tool.get("toolId") or matching_tool.get("name")
+                if tool_id:
+                    kb_name_to_rex_tool_id[kb_name] = tool_id
+                    found.add(kb_name)
+                    log.info("  Found REX search tool for KB '%s' (id=%s)", kb_name, tool_id)
 
         if len(found) == len(expected):
             break
@@ -491,13 +502,13 @@ def discover_rex_tools(
 
     missing = set(expected) - found
     if missing:
-        # Fallback: Use index ID or KB ID directly as tool_id for PAIS_KNOWLEDGE_BASE_INDEX_SEARCH_TOOL_LINK
         for kb_name in missing:
             info = kb_info.get(kb_name, {})
             target_id = info.get("index_id") or info.get("kb_id")
             if target_id:
-                kb_name_to_rex_tool_id[kb_name] = target_id
-                log.info("  Resolved KB '%s' search tool ID directly to index ID -> %s", kb_name, target_id)
+                tool_id = pc.rex_tool_name_for_index(target_id)
+                kb_name_to_rex_tool_id[kb_name] = tool_id
+                log.info("  Resolved KB '%s' search tool ID directly to REX tool name -> %s", kb_name, tool_id)
 
     return kb_name_to_rex_tool_id
 
@@ -577,11 +588,10 @@ def _build_agent_tools(
             # Auto-discover pre-existing Knowledge Base on PAIS
             existing_kb = client.find_by_name(pc.KNOWLEDGE_BASES, kb_name)
             if existing_kb:
-                if existing_kb.get("index", {}).get("id"):
-                    rex_tool_id = existing_kb["index"]["id"]
-                else:
-                    rex_tool_id = existing_kb.get("id")
-                log.info("  Agent '%s': Resolved search tool for pre-existing KB '%s' -> id=%s", ag_name, kb_name, rex_tool_id)
+                idx_id = existing_kb.get("index", {}).get("id") or existing_kb.get("id")
+                if idx_id:
+                    rex_tool_id = pc.rex_tool_name_for_index(idx_id)
+                log.info("  Agent '%s': Resolved search tool for pre-existing KB '%s' -> %s", ag_name, kb_name, rex_tool_id)
 
         if not rex_tool_id:
             log.warning("  Agent '%s': REX tool for KB '%s' unavailable - skipping", ag_name, kb_name)
