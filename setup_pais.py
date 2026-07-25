@@ -442,6 +442,21 @@ def is_valid_uuid(val: Any) -> bool:
         return False
 
 
+def _extract_all_uuids(obj: Any) -> list[str]:
+    """Recursively extract all valid UUID strings from a nested dict/list."""
+    uuids: list[str] = []
+    if isinstance(obj, dict):
+        for v in obj.values():
+            if isinstance(v, str) and is_valid_uuid(v):
+                uuids.append(v)
+            elif isinstance(v, (dict, list)):
+                uuids.extend(_extract_all_uuids(v))
+    elif isinstance(obj, list):
+        for item in obj:
+            uuids.extend(_extract_all_uuids(item))
+    return uuids
+
+
 def discover_rex_tools(
     client: pc.PAISClient,
     kb_info: dict[str, dict[str, str]],
@@ -470,6 +485,15 @@ def discover_rex_tools(
 
     while time.time() < deadline:
         all_tools: list[tuple[str, dict]] = []
+
+        # 1. ALWAYS query global tools endpoint FIRST (built-in/system tools)
+        try:
+            for t in client.list_all(pc.MCP_TOOLS):
+                all_tools.append(("", t))
+        except Exception as exc:
+            log.debug("Global MCP tools list query: %s", exc)
+
+        # 2. Query tools per registered MCP server
         try:
             mcp_servers = client.list_all(pc.MCP_SERVERS)
             for srv in mcp_servers:
@@ -478,15 +502,8 @@ def discover_rex_tools(
                     srv_tools = client.list_all(pc.MCP_TOOLS, params={"server": srv_id})
                     for t in srv_tools:
                         all_tools.append((srv_id, t))
-        except Exception:
-            pass
-
-        if not all_tools:
-            try:
-                for t in client.list_all(pc.MCP_TOOLS):
-                    all_tools.append(("", t))
-            except Exception:
-                pass
+        except Exception as exc:
+            log.debug("Server-specific MCP tools list query: %s", exc)
 
         for kb_name, expected_rex_name in expected.items():
             if kb_name in found:
@@ -495,6 +512,7 @@ def discover_rex_tools(
             info = kb_info.get(kb_name, {})
             idx_id = info.get("index_id", "")
             kb_id = info.get("kb_id", "")
+            idx_hex = idx_id.replace("-", "") if idx_id else ""
 
             matching_srv_id = None
             matching_tool = None
@@ -505,6 +523,7 @@ def discover_rex_tools(
 
                 if any(
                     expected_rex_name.lower() in k.lower()
+                    or (idx_hex and idx_hex.lower() in k.lower())
                     or kb_name.lower() == k.lower()
                     or (idx_id and idx_id in k)
                     or (kb_id and kb_id in k)
@@ -513,6 +532,8 @@ def discover_rex_tools(
                     idx_id and idx_id in t_id
                 ) or (
                     kb_id and kb_id in t_id
+                ) or (
+                    idx_hex and idx_hex in t_id
                 ):
                     matching_srv_id = srv_id
                     matching_tool = t
@@ -520,7 +541,7 @@ def discover_rex_tools(
 
             if matching_tool:
                 tool_uuid = matching_tool.get("id") or matching_tool.get("tool_id") or matching_tool.get("toolId")
-                if is_valid_uuid(tool_uuid):
+                if is_valid_uuid(tool_uuid) and tool_uuid != kb_id and tool_uuid != idx_id:
                     if matching_srv_id and not matching_tool.get("is_approved"):
                         try:
                             client.post(pc.mcp_tool_approval(matching_srv_id, tool_uuid), json_body={"is_approved": True})
@@ -531,6 +552,38 @@ def discover_rex_tools(
                     found.add(kb_name)
                     log.info("  Found REX search tool for KB '%s' (tool_id=%s)", kb_name, tool_uuid)
 
+        # 3. Direct lookup on KB/Index details if not matched in tools
+        for kb_name in set(expected) - found:
+            info = kb_info.get(kb_name, {})
+            kb_id = info.get("kb_id", "")
+            idx_id = info.get("index_id", "")
+
+            found_uuid = None
+            if kb_id:
+                try:
+                    kb_detail = client.get(f"{pc.KNOWLEDGE_BASES}/{kb_id}")
+                    for val in _extract_all_uuids(kb_detail):
+                        if val != kb_id and val != idx_id:
+                            found_uuid = val
+                            break
+                except Exception:
+                    pass
+
+            if not found_uuid and kb_id and idx_id:
+                try:
+                    idx_detail = client.get(f"{pc.KNOWLEDGE_BASES}/{kb_id}/indexes/{idx_id}")
+                    for val in _extract_all_uuids(idx_detail):
+                        if val != kb_id and val != idx_id:
+                            found_uuid = val
+                            break
+                except Exception:
+                    pass
+
+            if found_uuid:
+                kb_name_to_rex_tool_id[kb_name] = found_uuid
+                found.add(kb_name)
+                log.info("  Resolved KB '%s' search tool ID from KB/Index details -> %s", kb_name, found_uuid)
+
         if len(found) == len(expected):
             break
         log.info("  Waiting for REX tools: %s (retry in 5s)...", set(expected) - found)
@@ -538,27 +591,7 @@ def discover_rex_tools(
 
     missing = set(expected) - found
     if missing:
-        for kb_name in missing:
-            info = kb_info.get(kb_name, {})
-            kb_id = info.get("kb_id", "")
-            target_id = None
-            if kb_id:
-                try:
-                    existing_kb = client.get(f"{pc.KNOWLEDGE_BASES}/{kb_id}")
-                    target_id = (
-                        existing_kb.get("tool_id")
-                        or existing_kb.get("search_tool_id")
-                        or existing_kb.get("index", {}).get("tool_id")
-                    )
-                except Exception:
-                    pass
-
-            if not is_valid_uuid(target_id):
-                target_id = kb_id if is_valid_uuid(kb_id) else info.get("index_id")
-
-            if target_id and is_valid_uuid(target_id):
-                kb_name_to_rex_tool_id[kb_name] = target_id
-                log.info("  Resolved KB '%s' search tool ID directly to valid UUID -> %s", kb_name, target_id)
+        log.warning("  REX search tool UUID not found for KBs: %s (will skip linking bad IDs)", missing)
 
     return kb_name_to_rex_tool_id
 
@@ -638,19 +671,17 @@ def _build_agent_tools(
             # Auto-discover pre-existing Knowledge Base on PAIS
             existing_kb = client.find_by_name(pc.KNOWLEDGE_BASES, kb_name)
             if existing_kb:
-                found_id = (
-                    existing_kb.get("tool_id")
-                    or existing_kb.get("search_tool_id")
-                    or existing_kb.get("index", {}).get("tool_id")
-                    or existing_kb.get("id")
-                    or existing_kb.get("index", {}).get("id")
-                )
-                if is_valid_uuid(found_id):
-                    rex_tool_id = found_id
-                log.info("  Agent '%s': Resolved search tool UUID for pre-existing KB '%s' -> %s", ag_name, kb_name, rex_tool_id)
+                kb_id = existing_kb.get("id")
+                idx_id = existing_kb.get("index", {}).get("id")
+                for val in _extract_all_uuids(existing_kb):
+                    if val != kb_id and val != idx_id:
+                        rex_tool_id = val
+                        break
+                if rex_tool_id:
+                    log.info("  Agent '%s': Resolved search tool UUID for pre-existing KB '%s' -> %s", ag_name, kb_name, rex_tool_id)
 
-        if not rex_tool_id:
-            log.warning("  Agent '%s': REX tool for KB '%s' unavailable - skipping", ag_name, kb_name)
+        if not rex_tool_id or not is_valid_uuid(rex_tool_id):
+            log.warning("  Agent '%s': REX search tool UUID for KB '%s' unavailable - skipping KB search tool link", ag_name, kb_name)
             continue
 
         entry: dict[str, Any] = {
