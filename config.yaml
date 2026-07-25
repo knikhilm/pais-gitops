@@ -110,13 +110,7 @@ knowledge_bases:
 # ============================================================
 # 5. MCP SERVERS & TOOL APPROVALS
 # ============================================================
-mcp_servers:
-  - name: "lab-mcp-server"
-    description: "Lab MCP server"
-    url: "http://10.138.218.135/sse"
-    transport: "SSE"
-    approve_tools:
-      - "Get the current time"
+mcp_servers: []
 
 # ============================================================
 # 6. AGENTS
