@@ -66,6 +66,35 @@ def apply_kubernetes_resources(config: dict, dry_run: bool, manifests_out_dir: s
 
 
 # ---------------------------------------------------------------------------
+# Helper: Universal Resource Updater
+# ---------------------------------------------------------------------------
+
+def update_resource(client: pc.PAISClient, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Attempt to update an existing resource trying PATCH first, then POST, then PUT.
+    Accommodates different HTTP verb preferences across PAIS REST API endpoints.
+    """
+    errors: list[str] = []
+
+    try:
+        return client.patch(path, json_body=json_body)
+    except Exception as exc:
+        errors.append(f"PATCH: {exc}")
+
+    try:
+        return client.post(path, json_body=json_body)
+    except Exception as exc:
+        errors.append(f"POST: {exc}")
+
+    try:
+        return client.put(path, json_body=json_body)
+    except Exception as exc:
+        errors.append(f"PUT: {exc}")
+
+    raise RuntimeError(f"Failed to update resource at '{path}' via PATCH/POST/PUT. Errors: {'; '.join(errors)}")
+
+
+# ---------------------------------------------------------------------------
 # 1. Data Sources
 # ---------------------------------------------------------------------------
 
@@ -88,6 +117,16 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
             except Exception:
                 credentials = credentials.strip()
 
+        payload: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "type": ds_type,
+            "origin_url": origin_url,
+            "credentials": credentials,
+        }
+        if ds.get("options"):
+            payload["options"] = ds["options"]
+
         if dry_run:
             log.info("  [dry-run] ensure data source '%s' (type=%s)", name, ds_type)
             name_to_id[name] = f"dry-run-ds-{name}"
@@ -95,8 +134,30 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
 
         existing = client.find_by_name(pc.DATA_SOURCES, name)
         if existing:
-            name_to_id[name] = existing["id"]
-            log.info("  Data source '%s' already exists -> id=%s (skip)", name, existing["id"])
+            ds_id = existing["id"]
+            name_to_id[name] = ds_id
+            needs_update = (
+                existing.get("description", "") != description
+                or existing.get("type") != ds_type
+                or existing.get("origin_url") != origin_url
+                or existing.get("credentials") != credentials
+                or (ds.get("options") and existing.get("options") != ds.get("options"))
+            )
+            if needs_update:
+                if test_conn:
+                    log.info("  [%s] Testing connectivity...", name)
+                    test_payload = {"origin_url": origin_url, "type": ds_type, "credentials": credentials}
+                    if ds.get("options"):
+                        test_payload["options"] = ds["options"]
+                    result = client.post(f"{pc.DATA_SOURCES}/test-connection", json_body=test_payload)
+                    if result.get("status") != "CONNECTIVITY_RESULT_SUCCESS":
+                        raise RuntimeError(f"Connectivity test for data source '{name}' failed: {result}")
+                    log.info("  [%s] Connectivity OK", name)
+
+                resp = update_resource(client, f"{pc.DATA_SOURCES}/{ds_id}", payload)
+                log.info("  Updated data source '%s' -> id=%s", name, ds_id)
+            else:
+                log.info("  Data source '%s' already exists -> id=%s (up to date)", name, ds_id)
             continue
 
         if test_conn:
@@ -111,16 +172,6 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
             if result.get("status") != "CONNECTIVITY_RESULT_SUCCESS":
                 raise RuntimeError(f"Connectivity test for data source '{name}' failed: {result}")
             log.info("  [%s] Connectivity OK", name)
-
-        payload: dict[str, Any] = {
-            "name": name,
-            "description": description,
-            "type": ds_type,
-            "origin_url": origin_url,
-            "credentials": credentials,
-        }
-        if ds.get("options"):
-            payload["options"] = ds["options"]
 
         resp = client.post(pc.DATA_SOURCES, json_body=payload)
         name_to_id[name] = resp["id"]
@@ -167,7 +218,16 @@ def apply_knowledge_bases(
         existing_kb = client.find_by_name(pc.KNOWLEDGE_BASES, kb_name)
         if existing_kb:
             kb_id = existing_kb["id"]
-            log.info("  Knowledge base '%s' already exists -> id=%s (skip create)", kb_name, kb_id)
+            needs_update = (
+                existing_kb.get("description", "") != kb_payload["description"]
+                or existing_kb.get("data_origin_type") != kb_payload["data_origin_type"]
+                or existing_kb.get("index_refresh_policy") != kb_payload["index_refresh_policy"]
+            )
+            if needs_update:
+                resp = update_resource(client, f"{pc.KNOWLEDGE_BASES}/{kb_id}", kb_payload)
+                log.info("  Updated knowledge base '%s' -> id=%s", kb_name, kb_id)
+            else:
+                log.info("  Knowledge base '%s' already exists -> id=%s (up to date)", kb_name, kb_id)
         else:
             resp = client.post(pc.KNOWLEDGE_BASES, json_body=kb_payload)
             kb_id = resp["id"]
@@ -217,11 +277,6 @@ def _apply_index(client: pc.PAISClient, kb_name: str, kb_id: str, idx_cfg: dict)
     existing_indexes = client.list_all(pc.kb_indexes(kb_id))
     existing_index = next((i for i in existing_indexes if i.get("name") == idx_name), None)
 
-    if existing_index:
-        index_id = existing_index["id"]
-        log.info("  Index '%s' already exists -> id=%s (skip create)", idx_name, index_id)
-        return index_id
-
     idx_payload = {
         "name": idx_name,
         "description": idx_cfg.get("description", ""),
@@ -230,6 +285,32 @@ def _apply_index(client: pc.PAISClient, kb_name: str, kb_id: str, idx_cfg: dict)
         "chunk_size": idx_cfg.get("chunk_size", 100),
         "chunk_overlap": idx_cfg.get("chunk_overlap", 0),
     }
+
+    if existing_index:
+        index_id = existing_index["id"]
+        needs_update = (
+            existing_index.get("description", "") != idx_payload["description"]
+            or existing_index.get("embeddings_model_endpoint") != idx_payload["embeddings_model_endpoint"]
+            or existing_index.get("text_splitting") != idx_payload["text_splitting"]
+            or existing_index.get("chunk_size") != idx_payload["chunk_size"]
+            or existing_index.get("chunk_overlap") != idx_payload["chunk_overlap"]
+        )
+        if needs_update:
+            resp = update_resource(client, f"{pc.kb_indexes(kb_id)}/{index_id}", idx_payload)
+            log.info("  Updated index '%s' -> id=%s", idx_name, index_id)
+            if idx_cfg.get("trigger_indexing", False):
+                log.info("  Triggering re-indexing for updated '%s'...", idx_name)
+                indexing_resp = client.post(pc.kb_indexings(kb_id, index_id))
+                indexing_id = indexing_resp["id"]
+                log.info("  Indexing triggered -> id=%s (state=%s)", indexing_id, indexing_resp.get("state"))
+                if idx_cfg.get("wait_for_indexing", False):
+                    _wait_for_indexing(
+                        client, kb_id, index_id, indexing_id,
+                        idx_cfg.get("indexing_timeout_seconds", 300),
+                    )
+        else:
+            log.info("  Index '%s' already exists -> id=%s (up to date)", idx_name, index_id)
+        return index_id
     resp = client.post(pc.kb_indexes(kb_id), json_body=idx_payload)
     index_id = resp["id"]
     log.info("  Created index '%s' -> id=%s", idx_name, index_id)
@@ -275,12 +356,19 @@ def _wait_for_indexing(client: pc.PAISClient, kb_id: str, index_id: str, indexin
 # ---------------------------------------------------------------------------
 
 def apply_mcp_servers(client: pc.PAISClient, mcp_configs: list[dict], dry_run: bool) -> dict[str, str]:
-    """Register MCP servers that don't yet exist. Returns {name -> id}."""
+    """Register or update MCP servers idempotently. Returns {name -> id}."""
     log.info("=== Step 3: MCP Servers ===")
     server_name_to_id: dict[str, str] = {}
 
     for srv in mcp_configs:
         name = srv["name"]
+        payload: dict[str, Any] = {
+            "name": name,
+            "url": srv["url"],
+            "transport": srv.get("transport", "STREAMABLE_HTTP"),
+        }
+        if srv.get("description"):
+            payload["description"] = srv["description"]
 
         if dry_run:
             log.info("  [dry-run] ensure MCP server '%s' (%s)", name, srv.get("url"))
@@ -289,17 +377,19 @@ def apply_mcp_servers(client: pc.PAISClient, mcp_configs: list[dict], dry_run: b
 
         existing = client.find_by_name(pc.MCP_SERVERS, name)
         if existing:
-            server_name_to_id[name] = existing["id"]
-            log.info("  MCP server '%s' already exists -> id=%s (skip)", name, existing["id"])
+            srv_id = existing["id"]
+            server_name_to_id[name] = srv_id
+            needs_update = (
+                existing.get("url") != payload["url"]
+                or existing.get("transport") != payload["transport"]
+                or existing.get("description", "") != payload.get("description", "")
+            )
+            if needs_update:
+                resp = update_resource(client, f"{pc.MCP_SERVERS}/{srv_id}", payload)
+                log.info("  Updated MCP server '%s' -> id=%s", name, srv_id)
+            else:
+                log.info("  MCP server '%s' already exists -> id=%s (up to date)", name, srv_id)
             continue
-
-        payload: dict[str, Any] = {
-            "name": name,
-            "url": srv["url"],
-            "transport": srv.get("transport", "STREAMABLE_HTTP"),
-        }
-        if srv.get("description"):
-            payload["description"] = srv["description"]
 
         resp = client.post(pc.MCP_SERVERS, json_body=payload)
         server_name_to_id[name] = resp["id"]
@@ -666,7 +756,7 @@ def apply_agents(
 
         if existing:
             agent_id = existing["id"]
-            resp = client.post(f"{pc.AGENTS}/{agent_id}", json_body=payload)
+            resp = update_resource(client, f"{pc.AGENTS}/{agent_id}", payload)
             log.info("  Updated agent '%s' -> id=%s (status=%s)", ag_name, agent_id, resp.get("status"))
         else:
             resp = client.post(pc.AGENTS, json_body=payload)

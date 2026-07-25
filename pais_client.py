@@ -590,6 +590,21 @@ class PAISClient:
         self._raise_for_status(resp, f"PATCH {path}")
         return resp.json()
 
+    def put(self, path: str, json_body: dict | None = None, **kwargs: Any) -> Any:
+        self._ensure_online()
+        full_url = self._url(path)
+        resp = self._client.put(full_url, json=json_body, **kwargs)
+
+        if resp.is_error and "/control/" in full_url and "<html" in resp.text.lower():
+            fallback_url = full_url.replace("/api/v1/control/", "/api/v1/").replace("/control/", "/")
+            log.debug("PUT endpoint returned %d HTML. Retrying fallback endpoint...", resp.status_code)
+            resp = self._client.put(fallback_url, json=json_body, **kwargs)
+            if resp.status_code < 400:
+                return resp.json()
+
+        self._raise_for_status(resp, f"PUT {path}")
+        return resp.json()
+
     def delete(self, path: str, **kwargs: Any) -> Any:
         self._ensure_online()
         full_url = self._url(path)
