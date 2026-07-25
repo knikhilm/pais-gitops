@@ -72,40 +72,12 @@ model_endpoints:
 # ============================================================
 # 3. REST DATA SOURCES
 # ============================================================
-data_sources:
-  - name: "vcf-blogs"
-    description: "VCF blogs stored in an S3 bucket"
-    type: "S3"
-    origin_url: "${S3_ORIGIN_URL}"
-    credentials:
-      access_key: "${S3_ACCESS_KEY}"
-      secret_key: "${S3_SECRET_KEY}"
-    options:
-      bucket: "blogs"
-      prefix: ""
-    test_connection: true
+data_sources: []
 
 # ============================================================
 # 4. KNOWLEDGE BASES & INDEXES
 # ============================================================
-knowledge_bases:
-  - name: "vcf-blogs"
-    description: "VCF Blogs"
-    data_origin_type: "DATA_SOURCES"
-    index_refresh_policy:
-      policy_type: "MANUAL"
-    data_sources:
-      - "vcf-blogs"
-    index:
-      name: "vcf-blogs-index"
-      description: ""
-      embeddings_model_endpoint: "bge-small"
-      text_splitting: "SENTENCE"
-      chunk_size: 300
-      chunk_overlap: 30
-      trigger_indexing: true
-      wait_for_indexing: true
-      indexing_timeout_seconds: 600
+knowledge_bases: []
 
 # ============================================================
 # 5. MCP SERVERS & TOOL APPROVALS
@@ -115,17 +87,4 @@ mcp_servers: []
 # ============================================================
 # 6. AGENTS
 # ============================================================
-agents:
-  - name: "product-support-agent"
-    description: "Agent with access to product docs and support articles plus live tools"
-    model: "gemma-2-9b-v6"
-    instructions: >
-      You are a helpful product-support assistant. If you don't know the answer, say "I don't know".
-    completion_role: "assistant"
-    session_max_length: 10000
-    session_summarization_strategy: "delete_oldest"
-    chat_system_instruction_mode: "system-message"
-    index_reference_format: "markdown"
-    index_reference_delimiter: "\npais-chat-marker\n"
-    knowledge_bases: []
-    mcp_tools: []
+agents: []
