@@ -48,7 +48,8 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
         log.info("  [dry-run] K8s authentication check completed (skipped actual login).")
         return True
 
-    k8s_cfg = config.get("kubernetes", {})
+    pais_cfg = config.get("pais", {})
+    k8s_cfg = config.get("kubernetes", pais_cfg)
     vsphere_cfg = k8s_cfg.get("vsphere", {})
 
     # Method 1: VCF CLI Authentication (vcf context create & vcf context use)
@@ -412,7 +413,8 @@ def generate_k8s_manifests(config: dict) -> list[dict[str, Any]]:
     """
     Build all Kubernetes manifests (Secrets, ModelEndpoints, InferenceGatewayRoutes).
     """
-    k8s_cfg = config.get("kubernetes", {})
+    pais_cfg = config.get("pais", {})
+    k8s_cfg = config.get("kubernetes", pais_cfg)
     default_ns = k8s_cfg.get("namespace")  # Omit namespace if not explicitly configured
 
     manifests: list[dict[str, Any]] = []
@@ -591,7 +593,7 @@ def delete_removed_k8s_resources(old_config: dict, new_config: dict, dry_run: bo
     if not dry_run:
         authenticate_k8s_cluster(new_config, dry_run=dry_run)
 
-    default_ns = new_config.get("kubernetes", {}).get("namespace")
+    default_ns = new_config.get("kubernetes", new_config.get("pais", {})).get("namespace")
 
     for name in sorted(removed_routes):
         route = old_endpoints.get(name) or old_routes.get(name) or {}
