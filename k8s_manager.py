@@ -371,9 +371,20 @@ def build_inference_gateway_route_crd(route_cfg: dict, default_namespace: str | 
             backend_spec["modelId"] = backend_cfg["model_id"]
         if "tls" in backend_cfg:
             backend_spec["tls"] = backend_cfg["tls"]
-        if "auth" in backend_cfg:
-            backend_spec["auth"] = backend_cfg["auth"]
-        if backend_spec:
+            if "auth" in backend_cfg:
+                auth_cfg = backend_cfg["auth"]
+                auth_spec = {}
+                if isinstance(auth_cfg, dict):
+                    if "api_token_ref" in auth_cfg:
+                        auth_spec["apiTokenRef"] = auth_cfg["api_token_ref"]
+                    elif "apiTokenRef" in auth_cfg:
+                        auth_spec["apiTokenRef"] = auth_cfg["apiTokenRef"]
+                    else:
+                        auth_spec = auth_cfg
+                else:
+                    auth_spec = auth_cfg
+                backend_spec["auth"] = auth_spec
+            if backend_spec:
             spec["backend"] = backend_spec
 
     metadata: dict[str, Any] = {

@@ -110,6 +110,9 @@ inference_routes:
       model_id: "meta-llama/Meta-Llama-3.1-8B-Instruct"
       tls:
         verification: "strict"
+      auth:
+        api_token_ref:
+          name: "shared-models-token"
 
   - name: "route-bge-small"
     namespace: "default"
