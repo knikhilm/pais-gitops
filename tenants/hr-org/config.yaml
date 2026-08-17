@@ -1,0 +1,144 @@
+# ============================================================
+# VCF Private AI Services (PAIS) - Tenant: HR Organization
+# ============================================================
+# Declaratively manages PAIS resources for the HR Org across:
+#   - K8s Control Plane: ModelEndpoints & InferenceGatewayRoutes (hr-dev-ns)
+#   - REST Data/Agent Plane: Data Sources, Knowledge Bases, MCP Servers, Agents
+# ============================================================
+
+pais:
+  base_url: "${PAIS_BASE_URL}"             # REST Data/Agent Plane API endpoint
+  auth:
+    token_url: "${PAIS_TOKEN_URL}"
+    client_id: "${PAIS_CLIENT_ID}"
+    client_secret: "${PAIS_CLIENT_SECRET}"
+    scope: "openid groups offline_access"
+    username: "${PAIS_USERNAME}"
+    password: "${PAIS_PASSWORD}"
+    verify_ssl: false
+  mcp_tool_discovery_timeout_seconds: 60
+  rex_discovery_timeout_seconds: 30
+
+  # Kubernetes Cluster & VCFA Namespace for HR Org
+  vsphere:
+    server: "${VCF_ENDPOINT}"
+    api_token: "${VCF_API_TOKEN}"
+    username: "${VCF_USER}"
+    password: "${VCF_PASSWORD}"
+    type: "cci"
+    auth_type: "basic"
+    tenant_name: "all-apps"
+    namespace: "${HR_VCF_NAMESPACE:-hr-dev-ns}"
+    project_name: "${HR_VCF_PROJECT:-hr-project}"
+    context_name: "vcf-hr-org"
+
+  registry:
+    server: "${HARBOR_REGISTRY}"
+    username: "${HARBOR_USERNAME}"
+    password: "${HARBOR_PASSWORD}"
+    secret_name: "harbor-registry-secret"
+    insecure: true
+    insecure_skip_tls_verify: true
+    ca_cert: "${HARBOR_CA_CERT}"
+
+# ============================================================
+# 1. KUBERNETES MODEL ENDPOINTS (hr-dev-ns)
+# ============================================================
+model_endpoints:
+  - name: "hr-llama-8b"
+    type: "Completions"
+    engine: "vLLM"
+    routing_name: "hr-llama-8b"
+    replicas: 1
+    virtual_machine_class_name: "nvidia-a10g-gpu-class"
+    storage_class_name: "vsan-default-storage-class"
+    model:
+      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/llama-3.1-8b:v1.0"
+    inference_server_customization:
+      cli_args: ["--max-model-len=8192", "--gpu-memory-utilization=0.90"]
+      env_vars: []
+
+# ============================================================
+# 2. INFERENCE GATEWAY ROUTES (hr-dev-ns)
+# ============================================================
+inference_routes:
+  - name: "hr-llama-route"
+    type: "Completions"
+    engine: "vLLM"
+    matches:
+      routing_name: "hr-llama-8b"
+    backend:
+      http_base_url: "http://hr-llama-8b.svc.cluster.local"
+      model_id: "hr-llama-8b"
+
+# ============================================================
+# 3. REST DATA SOURCES
+# ============================================================
+data_sources:
+  - name: "hr-policy-docs"
+    description: "HR company policies and benefits documents"
+    type: "S3"
+    origin_url: "${S3_ORIGIN_URL}"
+    credentials:
+      access_key: "${S3_ACCESS_KEY}"
+      secret_key: "${S3_SECRET_KEY}"
+    options:
+      bucket: "hr-policies"
+      prefix: "handbook/"
+    test_connection: false
+
+# ============================================================
+# 4. KNOWLEDGE BASES & INDEXES
+# ============================================================
+knowledge_bases:
+  - name: "hr-policy-kb"
+    description: "HR Organization Knowledge Base for Employee Policies"
+    data_origin_type: "DATA_SOURCES"
+    index_refresh_policy:
+      policy_type: "MANUAL"
+    data_sources:
+      - "hr-policy-docs"
+    index:
+      name: "hr-policy-index"
+      description: "Index of employee handbook and policy guidelines"
+      embeddings_model_endpoint: "bge-small"
+      text_splitting: "SENTENCE"
+      chunk_size: 250
+      chunk_overlap: 25
+      trigger_indexing: true
+      wait_for_indexing: true
+      indexing_timeout_seconds: 600
+
+# ============================================================
+# 5. MCP SERVERS & TOOL APPROVALS
+# ============================================================
+mcp_servers:
+  - name: "lab-mcp-server"
+    description: "Lab MCP server for utility tools"
+    url: "http://10.138.218.135/sse"
+    transport: "SSE"
+    approve_tools:
+      - "Get the current time"
+
+# ============================================================
+# 6. AGENTS
+# ============================================================
+agents:
+  - name: "hr-policy-agent"
+    description: "HR Assistant helping employees navigate company policy and benefits"
+    model: "hr-llama-8b"
+    instructions: >
+      You are an HR policy assistant. Answer employee questions polite and clearly using the HR handbook knowledge base.
+    completion_role: "assistant"
+    session_max_length: 10000
+    session_summarization_strategy: "delete_oldest"
+    chat_system_instruction_mode: "system-message"
+    index_reference_format: "markdown"
+    index_reference_delimiter: "\npais-chat-marker\n"
+    knowledge_bases:
+      - name: "hr-policy-kb"
+        top_n: 3
+        similarity_cutoff: 0.5
+    mcp_tools:
+      - server: "lab-mcp-server"
+        tool_name: "Get the current time"

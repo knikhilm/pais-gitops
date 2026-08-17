@@ -1,16 +1,14 @@
-name: PAIS GitOps
+name: PAIS GitOps (Multi-Tenant)
 
-# Reconcile the PAIS instance whenever the desired-state config changes.
-#   * k8s_manager.py  generates & reconciles ModelEndpoints and InferenceGatewayRoutes
-#   * setup_pais.py   applies additions + updates (idempotent)
-#   * cleanup_pais.py removes anything deleted from the config since the
-#     previous commit (compares prev vs current config.yaml)
+# Reconcile PAIS instances across all tenants whenever desired-state configs change.
+# Supports Multi-Tenant Approach A (tenants/<tenant-name>/config.yaml).
 
 on:
   push:
     branches: [ main ]
     paths:
       - "config.yaml"
+      - "tenants/**/config.yaml"
       - "*.py"
       - ".github/workflows/pais-gitops.yml"
   workflow_dispatch:
@@ -28,7 +26,7 @@ permissions:
   contents: read
 
 jobs:
-  reconcile:
+  reconcile-tenants:
     runs-on: pais-gitops
     env:
       PYTHONUNBUFFERED: "1"
@@ -42,7 +40,7 @@ jobs:
       PAIS_TOKEN: ${{ secrets.PAIS_TOKEN }}
       PAIS_SCOPE: ${{ secrets.PAIS_SCOPE }}
       PAIS_VERIFY_SSL: ${{ secrets.PAIS_VERIFY_SSL || 'false' }}
-      # --- Data-source credentials referenced as ${...} in config.yaml ---
+      # --- Data-source credentials referenced as ${...} in configs ---
       GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
       GDRIVE_ORIGIN_URL: ${{ secrets.GDRIVE_ORIGIN_URL }}
       S3_CREDENTIALS: ${{ secrets.S3_CREDENTIALS }}
@@ -57,7 +55,7 @@ jobs:
       VCF_PASSWORD: ${{ secrets.VCF_PASSWORD || secrets.VSPHERE_PASSWORD }}
       VCF_NAMESPACE: ${{ secrets.VCF_NAMESPACE || secrets.VSPHERE_NAMESPACE }}
       VCF_PROJECT: ${{ secrets.VCF_PROJECT || secrets.PROJECT_NAME }}
-      # --- OCI / Harbor Registry Credentials for Image Pull Secret (Self-signed TLS support) ---
+      # --- OCI / Harbor Registry Credentials for Image Pull Secret ---
       HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
       HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
       HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
@@ -86,37 +84,63 @@ jobs:
           echo "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
 
-      - name: Extract previous config (for removal detection)
-        id: prev
+      - name: Discover and Reconcile All Tenant Configs
         shell: bash
         run: |
           set -euo pipefail
-          BEFORE="${{ github.event.before }}"
-          OUT="${RUNNER_TEMP}/old_config.yaml"
 
-          if [ -n "${BEFORE}" ] && [ "${BEFORE}" != "0000000000000000000000000000000000000000" ] \
-             && git cat-file -e "${BEFORE}:config.yaml" 2>/dev/null; then
-            git show "${BEFORE}:config.yaml" > "$OUT"
-            echo "has_old=true" >> "$GITHUB_OUTPUT"
-            echo "Captured previous config from ${BEFORE}"
-          elif git rev-parse HEAD~1 >/dev/null 2>&1 && git cat-file -e "HEAD~1:config.yaml" 2>/dev/null; then
-            git show "HEAD~1:config.yaml" > "$OUT"
-            echo "has_old=true" >> "$GITHUB_OUTPUT"
-            echo "Captured previous config from HEAD~1"
-          else
-            echo "has_old=false" >> "$GITHUB_OUTPUT"
-            echo "No previous config available - removals will be skipped (first apply)."
+          # Discover all active config.yaml files
+          CONFIG_FILES=()
+          if [ -f "config.yaml" ]; then
+            CONFIG_FILES+=("config.yaml")
+          fi
+          for cfg in tenants/*/config.yaml; do
+            if [ -f "$cfg" ]; then
+              CONFIG_FILES+=("$cfg")
+            fi
+          done
+
+          if [ ${#CONFIG_FILES[@]} -eq 0 ]; then
+            echo "No config.yaml files found."
+            exit 0
           fi
 
-      - name: Apply additions and updates (Model Endpoints, Routes, KBs, Agents)
-        run: python setup_pais.py --config config.yaml ${DRY_RUN_FLAG}
+          echo "Discovered tenant config files: ${CONFIG_FILES[*]}"
 
-      - name: Apply removals
-        if: steps.prev.outputs.has_old == 'true'
-        run: |
-          python cleanup_pais.py \
-            --old-config "${RUNNER_TEMP}/old_config.yaml" \
-            --new-config config.yaml ${DRY_RUN_FLAG}
+          BEFORE="${{ github.event.before }}"
+
+          for CFG in "${CONFIG_FILES[@]}"; do
+            echo ""
+            echo "=========================================================================="
+            echo "RECONCILING TENANT CONFIG: ${CFG}"
+            echo "=========================================================================="
+
+            OLD_OUT="${RUNNER_TEMP}/old_${CFG//\//_}.yaml"
+            HAS_OLD=false
+
+            if [ -n "${BEFORE}" ] && [ "${BEFORE}" != "0000000000000000000000000000000000000000" ] \
+               && git cat-file -e "${BEFORE}:${CFG}" 2>/dev/null; then
+              git show "${BEFORE}:${CFG}" > "$OLD_OUT"
+              HAS_OLD=true
+              echo "Captured previous config from ${BEFORE}"
+            elif git rev-parse HEAD~1 >/dev/null 2>&1 && git cat-file -e "HEAD~1:${CFG}" 2>/dev/null; then
+              git show "HEAD~1:${CFG}" > "$OLD_OUT"
+              HAS_OLD=true
+              echo "Captured previous config from HEAD~1"
+            fi
+
+            # 1. Apply additions and updates
+            python setup_pais.py --config "$CFG" ${DRY_RUN_FLAG}
+
+            # 2. Apply removals if previous config version exists
+            if [ "$HAS_OLD" = "true" ]; then
+              python cleanup_pais.py \
+                --old-config "$OLD_OUT" \
+                --new-config "$CFG" ${DRY_RUN_FLAG}
+            else
+              echo "No previous config version found for ${CFG} - skipping removals."
+            fi
+          done
 
       - name: Upload Generated Kubernetes Manifests as Artifact
         if: always()

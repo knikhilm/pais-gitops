@@ -1,0 +1,140 @@
+# ============================================================
+# VCF Private AI Services (PAIS) - Tenant: Shared Services
+# ============================================================
+# Declaratively manages shared cluster-wide PAIS resources:
+#   - K8s Control Plane: Shared Embedding Model & Gateway Routes (shared-services-ns)
+#   - REST Data/Agent Plane: Shared Data Sources, Vector Indexes, and MCP Tools
+# ============================================================
+
+pais:
+  base_url: "${PAIS_BASE_URL}"             # REST Data/Agent Plane API endpoint
+  auth:
+    token_url: "${PAIS_TOKEN_URL}"
+    client_id: "${PAIS_CLIENT_ID}"
+    client_secret: "${PAIS_CLIENT_SECRET}"
+    scope: "openid groups offline_access"
+    username: "${PAIS_USERNAME}"
+    password: "${PAIS_PASSWORD}"
+    verify_ssl: false
+  mcp_tool_discovery_timeout_seconds: 60
+  rex_discovery_timeout_seconds: 30
+
+  vsphere:
+    server: "${VCF_ENDPOINT}"
+    api_token: "${VCF_API_TOKEN}"
+    username: "${VCF_USER}"
+    password: "${VCF_PASSWORD}"
+    type: "cci"
+    auth_type: "basic"
+    tenant_name: "all-apps"
+    namespace: "${SHARED_VCF_NAMESPACE:-shared-services-ns}"
+    project_name: "${SHARED_VCF_PROJECT:-shared-project}"
+    context_name: "vcf-shared-services"
+
+  registry:
+    server: "${HARBOR_REGISTRY}"
+    username: "${HARBOR_USERNAME}"
+    password: "${HARBOR_PASSWORD}"
+    secret_name: "harbor-registry-secret"
+    insecure: true
+    insecure_skip_tls_verify: true
+    ca_cert: "${HARBOR_CA_CERT}"
+
+  api_tokens:
+    - name: "shared-models-token"
+      api_token: "${SHARED_MODELS_API_TOKEN}"
+
+# ============================================================
+# 1. KUBERNETES MODEL ENDPOINTS (shared-services-ns)
+# ============================================================
+model_endpoints:
+  - name: "bge-small"
+    type: "Embeddings"
+    engine: "Infinity"
+    routing_name: "bge-small"
+    replicas: 1
+    virtual_machine_class_name: "best-effort-large"
+    storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
+    model:
+      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/bge-small-en-v1.5:v1.0"
+
+# ============================================================
+# 2. INFERENCE GATEWAY ROUTES (shared-services-ns)
+# ============================================================
+inference_routes:
+  - name: "bge-small-route"
+    type: "Embeddings"
+    engine: "Infinity"
+    matches:
+      routing_name: "bge-small"
+    backend:
+      http_base_url: "http://bge-small.svc.cluster.local"
+      model_id: "bge-small"
+
+  - name: "shared-openai-gateway"
+    type: "Completions"
+    engine: "OpenAI"
+    matches:
+      routing_name: "shared-openai-model"
+    backend:
+      http_base_url: "https://pais-ingress-default.pais-vcfa-ntcwr.svc.cluster.local/api/v1/compatibility/openai"
+      model_id: "shared-model"
+      tls:
+        verification: "strict"
+      auth:
+        api_token_ref:
+          name: "shared-models-token"
+
+# ============================================================
+# 3. REST DATA SOURCES
+# ============================================================
+data_sources:
+  - name: "vcf-blogs"
+    description: "Shared VCF blogs stored in S3"
+    type: "S3"
+    origin_url: "${S3_ORIGIN_URL}"
+    credentials:
+      access_key: "${S3_ACCESS_KEY}"
+      secret_key: "${S3_SECRET_KEY}"
+    options:
+      bucket: "blogs"
+      prefix: ""
+    test_connection: false
+
+# ============================================================
+# 4. KNOWLEDGE BASES & INDEXES
+# ============================================================
+knowledge_bases:
+  - name: "vcf-blogs"
+    description: "Shared VCF Blogs Knowledge Base"
+    data_origin_type: "DATA_SOURCES"
+    index_refresh_policy:
+      policy_type: "MANUAL"
+    data_sources:
+      - "vcf-blogs"
+    index:
+      name: "vcf-blogs-index"
+      description: "Shared VCF blogs index"
+      embeddings_model_endpoint: "bge-small"
+      text_splitting: "SENTENCE"
+      chunk_size: 300
+      chunk_overlap: 30
+      trigger_indexing: true
+      wait_for_indexing: true
+      indexing_timeout_seconds: 600
+
+# ============================================================
+# 5. MCP SERVERS & TOOL APPROVALS
+# ============================================================
+mcp_servers:
+  - name: "lab-mcp-server"
+    description: "Shared Lab MCP server"
+    url: "http://10.138.218.135/sse"
+    transport: "SSE"
+    approve_tools:
+      - "Get the current time"
+
+# ============================================================
+# 6. AGENTS
+# ============================================================
+agents: []

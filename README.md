@@ -188,12 +188,22 @@ For Data Sources, Knowledge Bases, MCP Servers, and Agents, `pais_client.py` use
 pais-gitops/                           # Repository Root
 ├── .github/
 │   └── workflows/
-│       └── pais-gitops.yml            # CI/CD Reconcile Workflow
+│       └── pais-gitops.yml            # CI/CD Multi-Tenant Reconcile Workflow
+├── tenants/                           # Directory-Based Multi-Tenancy (Approach A)
+│   ├── finance-org/
+│   │   └── config.yaml                # Finance VCFA namespace & AI workloads
+│   ├── hr-org/
+│   │   └── config.yaml                # HR VCFA namespace & AI workloads
+│   ├── shared-services/
+│   │   └── config.yaml                # Shared embeddings, gateway routes, & vector KBs
+│   └── README.md                      # Multi-Tenancy Documentation
+├── reconcile_all.py                   # Multi-Tenant Orchestrator (scans tenants/*/config.yaml)
 ├── k8s_manager.py                     # K8s Auth, Pull Secrets, CRD Generator & kubectl runner
 ├── pais_client.py                     # PAIS REST API Client, Auth & Helpers
 ├── setup_pais.py                      # GitOps Apply Script (CRDs + REST API)
 ├── cleanup_pais.py                    # GitOps Cleanup Script (Diff-based deletions)
-├── config.yaml                        # Desired State Configuration
+├── config.yaml                        # Default / Primary Desired State Config
+├── config_template.yaml               # Reference Template
 ├── requirements.txt                   # Python Dependencies (httpx, httpx-auth, pyyaml)
 ├── .gitignore
 └── README.md                          # Documentation
@@ -390,13 +400,37 @@ python setup_pais.py --config config.yaml --dry-run --verbose
 # 3. Inspect generated Kubernetes manifests
 cat k8s-manifests/pais-resources.yaml
 
-# 4. Preview removals
-python cleanup_pais.py --old-config previous_config.yaml --new-config config.yaml --dry-run
+# 4. Reconcile all tenant configurations in dry-run mode (Approach A)
+python reconcile_all.py --dry-run
 ```
 
 ---
 
-## 10. GitHub Secrets & GitOps Pipeline Setup
+## 10. Multi-Tenant Architecture (Directory-Based Isolation)
+
+The framework scales to multiple VCFA organizations and Kubernetes namespaces using **Directory-Based Isolation (Approach A)**.
+
+### How It Works
+
+1. **Folder per Tenant (`tenants/<tenant-name>/config.yaml`)**:
+   Each tenant (e.g. `finance-org`, `hr-org`, `shared-services`) maintains its own `config.yaml` in `tenants/<tenant-name>/`.
+2. **VCFA Namespace Context Switching**:
+   Each tenant's config specifies its own `vsphere` parameters:
+   ```yaml
+   vsphere:
+     namespace: "finance-dev-ns"
+     project_name: "finance-project"
+     context_name: "vcf-finance-org"
+   ```
+   When `setup_pais.py` processes a tenant, `k8s_manager.py` switches to that tenant's VCF context (`vcf context use`), preventing cross-tenant resource contamination.
+3. **Multi-Tenant Orchestration**:
+   `reconcile_all.py` automatically discovers all tenant config files and executes setup and diff-based cleanup sequentially for every tenant.
+4. **CI/CD Pipeline Integration**:
+   The GitHub Actions workflow automatically detects changes across `tenants/**/config.yaml` and reconciles all active tenant states idempotently.
+
+---
+
+## 11. GitHub Secrets & GitOps Pipeline Setup
 
 Add the following Repository Secrets under **Settings ▸ Secrets and variables ▸ Actions**:
 

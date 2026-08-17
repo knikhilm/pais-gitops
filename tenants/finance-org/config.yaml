@@ -1,0 +1,148 @@
+# ============================================================
+# VCF Private AI Services (PAIS) - Tenant: Finance Organization
+# ============================================================
+# Declaratively manages PAIS resources for the Finance Org across:
+#   - K8s Control Plane: ModelEndpoints & InferenceGatewayRoutes (finance-dev-ns)
+#   - REST Data/Agent Plane: Data Sources, Knowledge Bases, MCP Servers, Agents
+# ============================================================
+
+pais:
+  base_url: "${PAIS_BASE_URL}"             # REST Data/Agent Plane API endpoint
+  auth:
+    token_url: "${PAIS_TOKEN_URL}"
+    client_id: "${PAIS_CLIENT_ID}"
+    client_secret: "${PAIS_CLIENT_SECRET}"
+    scope: "openid groups offline_access"
+    username: "${PAIS_USERNAME}"
+    password: "${PAIS_PASSWORD}"
+    verify_ssl: false
+  mcp_tool_discovery_timeout_seconds: 60
+  rex_discovery_timeout_seconds: 30
+
+  # Kubernetes Cluster & VCFA Namespace for Finance Org
+  vsphere:
+    server: "${VCF_ENDPOINT}"
+    api_token: "${VCF_API_TOKEN}"
+    username: "${VCF_USER}"
+    password: "${VCF_PASSWORD}"
+    type: "cci"
+    auth_type: "basic"
+    tenant_name: "all-apps"
+    namespace: "${FINANCE_VCF_NAMESPACE:-finance-dev-ns}"
+    project_name: "${FINANCE_VCF_PROJECT:-finance-project}"
+    context_name: "vcf-finance-org"
+
+  registry:
+    server: "${HARBOR_REGISTRY}"
+    username: "${HARBOR_USERNAME}"
+    password: "${HARBOR_PASSWORD}"
+    secret_name: "harbor-registry-secret"
+    insecure: true
+    insecure_skip_tls_verify: true
+    ca_cert: "${HARBOR_CA_CERT}"
+
+  api_tokens:
+    - name: "finance-backend-token"
+      api_token: "${FINANCE_BACKEND_API_TOKEN}"
+
+# ============================================================
+# 1. KUBERNETES MODEL ENDPOINTS (finance-dev-ns)
+# ============================================================
+model_endpoints:
+  - name: "finance-gemma-2b"
+    type: "Completions"
+    engine: "LlamaCPP"
+    routing_name: "finance-gemma-2b"
+    replicas: 1
+    virtual_machine_class_name: "best-effort-2xlarge"
+    storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
+    model:
+      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/gemma-2-2b-gguf:v1.0"
+    inference_server_customization:
+      cli_args: ["-c 4096", "-t 4", "--no-mmap", "--jinja"]
+      env_vars: []
+
+# ============================================================
+# 2. INFERENCE GATEWAY ROUTES (finance-dev-ns)
+# ============================================================
+inference_routes:
+  - name: "finance-gemma-route"
+    type: "Completions"
+    engine: "LlamaCPP"
+    matches:
+      routing_name: "finance-gemma-2b"
+    backend:
+      http_base_url: "http://finance-gemma-2b.svc.cluster.local"
+      model_id: "finance-gemma-2b"
+
+# ============================================================
+# 3. REST DATA SOURCES
+# ============================================================
+data_sources:
+  - name: "finance-s3-reports"
+    description: "Financial reports and audit spreadsheets stored in S3"
+    type: "S3"
+    origin_url: "${S3_ORIGIN_URL}"
+    credentials:
+      access_key: "${S3_ACCESS_KEY}"
+      secret_key: "${S3_SECRET_KEY}"
+    options:
+      bucket: "finance-reports"
+      prefix: "2026/"
+    test_connection: false
+
+# ============================================================
+# 4. KNOWLEDGE BASES & INDEXES
+# ============================================================
+knowledge_bases:
+  - name: "finance-reports-kb"
+    description: "Finance Org Knowledge Base for Financial Reports"
+    data_origin_type: "DATA_SOURCES"
+    index_refresh_policy:
+      policy_type: "MANUAL"
+    data_sources:
+      - "finance-s3-reports"
+    index:
+      name: "finance-reports-index"
+      description: "Index of quarterly financial audit documents"
+      embeddings_model_endpoint: "bge-small"
+      text_splitting: "SENTENCE"
+      chunk_size: 300
+      chunk_overlap: 30
+      trigger_indexing: true
+      wait_for_indexing: true
+      indexing_timeout_seconds: 600
+
+# ============================================================
+# 5. MCP SERVERS & TOOL APPROVALS
+# ============================================================
+mcp_servers:
+  - name: "lab-mcp-server"
+    description: "Lab MCP server for utility tools"
+    url: "http://10.138.218.135/sse"
+    transport: "SSE"
+    approve_tools:
+      - "Get the current time"
+
+# ============================================================
+# 6. AGENTS
+# ============================================================
+agents:
+  - name: "finance-advisor-agent"
+    description: "Finance Org Assistant with access to audit reports and time utilities"
+    model: "finance-gemma-2b"
+    instructions: >
+      You are an assistant for the Finance Organization. Answer financial questions accurately based on indexed financial reports.
+    completion_role: "assistant"
+    session_max_length: 10000
+    session_summarization_strategy: "delete_oldest"
+    chat_system_instruction_mode: "system-message"
+    index_reference_format: "markdown"
+    index_reference_delimiter: "\npais-chat-marker\n"
+    knowledge_bases:
+      - name: "finance-reports-kb"
+        top_n: 3
+        similarity_cutoff: 0.5
+    mcp_tools:
+      - server: "lab-mcp-server"
+        tool_name: "Get the current time"

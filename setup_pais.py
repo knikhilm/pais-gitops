@@ -47,7 +47,7 @@ from pais_client import log
 # 0. Kubernetes Model Endpoints & Inference Gateway Routes
 # ---------------------------------------------------------------------------
 
-def apply_kubernetes_resources(config: dict, dry_run: bool, manifests_out_dir: str = "k8s-manifests") -> list[dict]:
+def apply_kubernetes_resources(config: dict, dry_run: bool, config_path: str = "config.yaml", manifests_out_dir: str = "k8s-manifests") -> list[dict]:
     """
     Generate and apply Kubernetes Custom Resources for ModelEndpoints and InferenceGatewayRoutes.
     """
@@ -55,7 +55,15 @@ def apply_kubernetes_resources(config: dict, dry_run: bool, manifests_out_dir: s
     manifests = km.generate_k8s_manifests(config)
 
     if manifests:
-        out_file = os.path.join(manifests_out_dir, "pais-resources.yaml")
+        norm_path = config_path.replace("\\", "/").strip("/")
+        parts = norm_path.split("/")
+        if len(parts) >= 2 and parts[-1] in ("config.yaml", "config.yml"):
+            tenant_name = parts[-2]
+            filename = f"{tenant_name}-pais-resources.yaml"
+        else:
+            filename = "pais-resources.yaml"
+
+        out_file = os.path.join(manifests_out_dir, filename)
         km.write_manifests_file(manifests, out_file)
         km.apply_k8s_manifests(config, manifests, dry_run=dry_run)
         km.wait_for_model_endpoints(config, dry_run=dry_run)
@@ -899,7 +907,7 @@ def main(argv: list[str] | None = None) -> None:
     cfg = pc.load_config(args.config)
 
     # Step 0: Kubernetes Model Endpoint & Inference Gateway Route reconciliation
-    k8s_manifests = apply_kubernetes_resources(cfg, args.dry_run)
+    k8s_manifests = apply_kubernetes_resources(cfg, args.dry_run, config_path=args.config)
 
     pais_cfg = cfg.get("pais", {})
     base_url, auth_cfg, verify_ssl = pc.resolve_connection(pais_cfg)
