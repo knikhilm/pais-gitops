@@ -27,9 +27,9 @@ pais:
     password: "${VCF_ALL_APPS_PASSWORD}"
     type: "cci"
     auth_type: "basic"
-    tenant_name: "all-apps"
-    namespace: "${VCF_ALL_APPS_NAMESPACE}"
-    project_name: "${VCF_ALL_APPS_PROJECT}"
+    tenant_name: "pais-all-apps"
+    namespace: "pais-vcfa-ntcwr"
+    project_name: "ai-project"
     context_name: "vcf-pais-all-apps"
 
   registry:
@@ -43,38 +43,44 @@ pais:
 
   # API Token Secrets provisioned for InferenceGatewayRoute authentication
   api_tokens:
-    - name: "all-apps-backend-token"
-      api_token: "${ALL_APPS_BACKEND_API_TOKEN}"
+    - name: "shared-models-token"
+      api_token: "${VCF_ALL_APPS_API_TOKEN}"
 
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (All-Apps Org)
 # ============================================================
-model_endpoints:
-  - name: "gemma-2-9b-v6"
-    type: "Completions"
-    engine: "LlamaCPP"
-    routing_name: "gemma-2-9b-v6"
-    replicas: 1
-    virtual_machine_class_name: "best-effort-2xlarge"
-    storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
-    model:
-      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/gemma-2-9b-gguf:v1.0"
-    inference_server_customization:
-      cli_args: ["-c 8192", "-t 8", "-tb 8", "-b 512", "--no-mmap", "--parallel 1", "--cache-type-k q8_0", "--jinja", "--flash-attn off"]
-      env_vars: []
+model_endpoints: []
 
 # ============================================================
 # 2. INFERENCE GATEWAY ROUTES (All-Apps Org)
 # ============================================================
 inference_routes:
-  - name: "gemma-2-9b-v6-route"
+  - name: "bge-m3-llm-service"
     type: "Completions"
-    engine: "LlamaCPP"
+    engine: "Infinity"
     matches:
-      routing_name: "gemma-2-9b-v6"
+      routing_name: "bge-m3-shared"
     backend:
-      http_base_url: "http://gemma-2-9b-v6.svc.cluster.local"
-      model_id: "gemma-2-9b-v6"
+      http_base_url: "https://10.138.217.12/api/v1/compatibility/openai"
+      model_id: "bge-m3"
+      tls:
+        verification: "none"
+      auth:
+        api_token_ref:
+          name: "shared-models-token"
+  - name: "gpt-oss-20b-llm-service"
+    type: "Completions"
+    engine: "vLLM"
+    matches:
+      routing_name: "gpt-oss-20b-shared"
+    backend:
+      http_base_url: "https://10.138.217.12/api/v1/compatibility/openai"
+      model_id: "gpt-oss-20b"
+      tls:
+        verification: "none"
+      auth:
+        api_token_ref:
+          name: "shared-models-token"
 
 # ============================================================
 # 3. REST DATA SOURCES
@@ -131,7 +137,7 @@ mcp_servers:
 agents:
   - name: "product-support-agent"
     description: "Agent with access to product docs and support articles plus live tools"
-    model: "gemma-2-9b-v6"
+    model: "gpt-oss-20b-shared"
     instructions: >
       You are a helpful product-support assistant. If you don't know the answer, say "I don't know".
     completion_role: "assistant"

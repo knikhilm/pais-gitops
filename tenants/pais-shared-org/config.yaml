@@ -27,9 +27,9 @@ pais:
     password: "${VCF_SHARED_PASSWORD}"
     type: "cci"
     auth_type: "basic"
-    tenant_name: "all-apps"
-    namespace: "${VCF_SHARED_NAMESPACE}"
-    project_name: "${VCF_SHARED_PROJECT}"
+    tenant_name: "pais-shared-org"
+    namespace: "pais-shared-ns-dlw7n"
+    project_name: "default-project"
     context_name: "vcf-pais-shared-org"
 
   registry:
@@ -44,48 +44,38 @@ pais:
   # API Token Secrets provisioned for InferenceGatewayRoute authentication
   api_tokens:
     - name: "shared-models-token"
-      api_token: "${SHARED_MODELS_API_TOKEN}"
+      api_token: "${VCF_SHARED_API_TOKEN}"
 
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (Shared Org)
 # ============================================================
 model_endpoints:
-  - name: "bge-small"
+  - name: "bge-m3"
     type: "Embeddings"
     engine: "Infinity"
-    routing_name: "bge-small"
+    routing_name: "bge-m3"
     replicas: 1
     virtual_machine_class_name: "best-effort-large"
     storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
     model:
-      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/bge-small-en-v1.5:v1.0"
+      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/bge-m3:v1.0"
+  - name: "gpt-oss-20b"
+    type: "Completions"
+    engine: "vLLM"
+    routing_name: "gpt-oss-20b"
+    replicas: 1
+    virtual_machine_class_name: "a100-40c-reserve"
+    storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
+    model:
+      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/openai/gpt-oss-20b:approved"
+    inference_server_customization:
+      cli_args: ["--max-model-len=4096", "--enable-auto-tool-choice", "--tokenizer-mode=slow", "--tool-call-parser=openai", "--trust-remote-code", "--tensor-parallel-size=1", "--gpu-memory-utilization=0.8", "--enforce-eager", "--disable-custom-all-reduce"]
+      env_vars: []
 
 # ============================================================
 # 2. INFERENCE GATEWAY ROUTES (Shared Org)
 # ============================================================
-inference_routes:
-  - name: "bge-small-route"
-    type: "Embeddings"
-    engine: "Infinity"
-    matches:
-      routing_name: "bge-small"
-    backend:
-      http_base_url: "http://bge-small.svc.cluster.local"
-      model_id: "bge-small"
-
-  - name: "shared-openai-gateway"
-    type: "Completions"
-    engine: "OpenAI"
-    matches:
-      routing_name: "shared-openai-model"
-    backend:
-      http_base_url: "https://pais-ingress-default.pais-vcfa-ntcwr.svc.cluster.local/api/v1/compatibility/openai"
-      model_id: "shared-model"
-      tls:
-        verification: "strict"
-      auth:
-        api_token_ref:
-          name: "shared-models-token"
+inference_routes: []
 
 # ============================================================
 # 3. REST DATA SOURCES
@@ -139,4 +129,22 @@ mcp_servers:
 # ============================================================
 # 6. AGENTS
 # ============================================================
-agents: []
+agents:
+  - name: "product-support-agent"
+    description: "Agent with access to product docs and support articles plus live tools"
+    model: "gpt-oss-20b"
+    instructions: >
+      You are a helpful product-support assistant. If you don't know the answer, say "I don't know".
+    completion_role: "assistant"
+    session_max_length: 10000
+    session_summarization_strategy: "delete_oldest"
+    chat_system_instruction_mode: "system-message"
+    index_reference_format: "markdown"
+    index_reference_delimiter: "\npais-chat-marker\n"
+    knowledge_bases:
+      - name: "vcf-blogs"
+        top_n: 3
+        similarity_cutoff: 0.5
+    mcp_tools:
+      - server: "lab-mcp-server"
+        tool_name: "Get the current time"
