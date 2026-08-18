@@ -51,6 +51,13 @@ pais:
     insecure: true                          # Set to true for self-signed SSL certificates / insecure HTTP
     insecure_skip_tls_verify: true          # Skip TLS verification when pulling model weights
     ca_cert: "${HARBOR_CA_CERT}"            # (Optional) PEM self-signed CA cert content
+    
+  # Method 3: API Token Secrets for InferenceGatewayRoutes
+  # Creates pais.vmware.com/api-token-credentials Secrets in the namespace
+  # so InferenceGatewayRoute objects can authenticate to external backends
+  api_tokens:
+    - name: "shared-models-token"
+      api_token: "${SHARED_MODELS_API_TOKEN}" # e.g. inject via GitHub Action Secrets
 
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (pais.vmware.com/v1alpha1 -> ModelEndpoint)
@@ -69,6 +76,34 @@ model_endpoints:
     inference_server_customization:
       cli_args: ["-c 8192", "-t 8", "-tb 8", "-b 512", "--no-mmap", "--parallel 1", "--cache-type-k q8_0", "--jinja", "--flash-attn off"]
       env_vars: []
+
+# ============================================================
+# 2. INFERENCE GATEWAY ROUTES (pais.vmware.com/v1alpha1 -> InferenceGatewayRoute)
+# ============================================================
+# Routing rules exposing models via the PAIS Data Plane API or routing to remote/external LLMs
+inference_routes:
+  - name: "gemma-2-9b-v6-route"
+    type: "Completions"
+    engine: "LlamaCPP"
+    matches:
+      routing_name: "gemma-2-9b-v6"
+    backend:
+      http_base_url: "http://gemma-2-9b-v6.svc.cluster.local"
+      model_id: "gemma-2-9b-v6"
+
+  - name: "bge-m3-llm-service"
+    type: "Completions"
+    engine: "OpenAI"
+    matches:
+      routing_name: "bge-m3-shared"
+    backend:
+      http_base_url: "https://pais-ingress-default.pais-vcfa-ntcwr.svc.cluster.local/api/v1/compatibility/openai"
+      model_id: "bge-m3"
+      tls:
+        verification: "strict"
+      auth:
+        api_token_ref:
+          name: "shared-models-token"
 
 # ============================================================
 # 3. REST DATA SOURCES

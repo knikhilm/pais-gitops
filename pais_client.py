@@ -125,8 +125,8 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     """
     Merge connection settings from config with environment variables.
 
-    Environment variables always take precedence so that CI can inject
-    secrets without committing them to git:
+    Config values (interpolated from ${ENV_VAR}) take precedence. If a setting
+    is omitted or unexpanded, environment variables act as fallbacks:
 
       PAIS_BASE_URL, PAIS_TOKEN_URL, PAIS_CLIENT_ID, PAIS_CLIENT_SECRET,
       PAIS_SCOPE, PAIS_USERNAME, PAIS_PASSWORD, PAIS_TOKEN, PAIS_VERIFY_SSL
@@ -135,7 +135,11 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
     """
     auth_cfg = dict(pais_cfg.get("auth", {}))
 
-    base_url = os.environ.get("PAIS_BASE_URL", "").strip() or str(pais_cfg.get("base_url") or "").strip()
+    cfg_base_url = str(pais_cfg.get("base_url") or "").strip()
+    if cfg_base_url and not cfg_base_url.startswith("${"):
+        base_url = cfg_base_url
+    else:
+        base_url = os.environ.get("PAIS_BASE_URL", "").strip()
 
     env_overrides = {
         "token": "PAIS_TOKEN",
@@ -148,9 +152,11 @@ def resolve_connection(pais_cfg: dict) -> tuple[str, dict, bool]:
         "password": "PAIS_PASSWORD",
     }
     for key, env_name in env_overrides.items():
-        env_val = os.environ.get(env_name, "").strip()
-        if env_val:
-            auth_cfg[key] = env_val
+        cfg_val = str(auth_cfg.get(key) or "").strip()
+        if not cfg_val or cfg_val.startswith("${"):
+            env_val = os.environ.get(env_name, "").strip()
+            if env_val:
+                auth_cfg[key] = env_val
 
     verify_ssl = auth_cfg.get("verify_ssl", True)
     if os.environ.get("PAIS_VERIFY_SSL") is not None and os.environ.get("PAIS_VERIFY_SSL", "").strip() != "":

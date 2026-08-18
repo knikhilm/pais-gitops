@@ -188,12 +188,22 @@ For Data Sources, Knowledge Bases, MCP Servers, and Agents, `pais_client.py` use
 pais-gitops/                           # Repository Root
 ├── .github/
 │   └── workflows/
-│       └── pais-gitops.yml            # CI/CD Reconcile Workflow
+│       └── pais-gitops.yml            # CI/CD Multi-Tenant Reconcile Workflow
+├── tenants/                           # Directory-Based Multi-Tenancy (Approach A)
+│   ├── finance-org/
+│   │   └── config.yaml                # Finance VCFA namespace & AI workloads
+│   ├── hr-org/
+│   │   └── config.yaml                # HR VCFA namespace & AI workloads
+│   ├── shared-services/
+│   │   └── config.yaml                # Shared embeddings, gateway routes, & vector KBs
+│   └── README.md                      # Multi-Tenancy Documentation
+├── reconcile_all.py                   # Multi-Tenant Orchestrator (scans tenants/*/config.yaml)
 ├── k8s_manager.py                     # K8s Auth, Pull Secrets, CRD Generator & kubectl runner
 ├── pais_client.py                     # PAIS REST API Client, Auth & Helpers
 ├── setup_pais.py                      # GitOps Apply Script (CRDs + REST API)
 ├── cleanup_pais.py                    # GitOps Cleanup Script (Diff-based deletions)
-├── config.yaml                        # Desired State Configuration
+├── config.yaml                        # Default / Primary Desired State Config
+├── config_template.yaml               # Reference Template
 ├── requirements.txt                   # Python Dependencies (httpx, httpx-auth, pyyaml)
 ├── .gitignore
 └── README.md                          # Documentation
@@ -390,35 +400,84 @@ python setup_pais.py --config config.yaml --dry-run --verbose
 # 3. Inspect generated Kubernetes manifests
 cat k8s-manifests/pais-resources.yaml
 
-# 4. Preview removals
-python cleanup_pais.py --old-config previous_config.yaml --new-config config.yaml --dry-run
+# 4. Reconcile all tenant configurations in dry-run mode (Approach A)
+python reconcile_all.py --dry-run
 ```
 
 ---
 
-## 10. GitHub Secrets & GitOps Pipeline Setup
+## 10. Multi-Tenant Architecture (Directory-Based Isolation)
+
+The framework scales to multiple VCFA organizations and Kubernetes namespaces using **Directory-Based Isolation (Approach A)**.
+
+### Active Tenants
+
+1. **`tenants/pais-shared-org/config.yaml`**:
+   Shared services tenant hosting shared embedding models (`bge-small`), shared gateway routes, shared vector KBs, and MCP tools.
+2. **`tenants/pais-all-apps/config.yaml`**:
+   Application workload tenant hosting LLM model endpoints (`gemma-2-9b-v6`), gateway routes, application KBs, and AI agents (`product-support-agent`).
+
+### Variable Naming Matrix per Tenant
+
+#### Shared Services Org (`pais-shared-org`)
+- **PAIS REST API**: `PAIS_SHARED_BASE_URL`, `PAIS_SHARED_TOKEN_URL`, `PAIS_SHARED_CLIENT_ID`, `PAIS_SHARED_CLIENT_SECRET`, `PAIS_SHARED_USERNAME`, `PAIS_SHARED_PASSWORD`
+- **vSphere / VCF CLI**: `VCF_SHARED_ENDPOINT`, `VCF_SHARED_API_TOKEN`, `VCF_SHARED_USER`, `VCF_SHARED_PASSWORD`, `VCF_SHARED_NAMESPACE`, `VCF_SHARED_PROJECT`
+- **Inference Route Token**: `SHARED_MODELS_API_TOKEN`
+
+#### All Applications Org (`pais-all-apps`)
+- **PAIS REST API**: `PAIS_ALL_APPS_BASE_URL`, `PAIS_ALL_APPS_TOKEN_URL`, `PAIS_ALL_APPS_CLIENT_ID`, `PAIS_ALL_APPS_CLIENT_SECRET`, `PAIS_ALL_APPS_USERNAME`, `PAIS_ALL_APPS_PASSWORD`
+- **vSphere / VCF CLI**: `VCF_ALL_APPS_ENDPOINT`, `VCF_ALL_APPS_API_TOKEN`, `VCF_ALL_APPS_USER`, `VCF_ALL_APPS_PASSWORD`, `VCF_ALL_APPS_NAMESPACE`, `VCF_ALL_APPS_PROJECT`
+- **Inference Route Token**: `ALL_APPS_BACKEND_API_TOKEN`
+
+### How It Works
+
+1. **Folder per Tenant (`tenants/<tenant-name>/config.yaml`)**:
+   Each tenant maintains its own `config.yaml` in `tenants/<tenant-name>/`.
+2. **VCFA Namespace Context Switching**:
+   Each tenant's config specifies its own `vsphere` parameters:
+   ```yaml
+   vsphere:
+     namespace: "${VCF_ALL_APPS_NAMESPACE}"
+     project_name: "${VCF_ALL_APPS_PROJECT}"
+     context_name: "vcf-pais-all-apps"
+   ```
+   When `setup_pais.py` processes a tenant, `k8s_manager.py` switches to that tenant's VCF context (`vcf context use`), preventing cross-tenant resource contamination.
+3. **Multi-Tenant Orchestration**:
+   `reconcile_all.py` automatically discovers all tenant config files and executes setup and diff-based cleanup sequentially for every tenant.
+4. **CI/CD Pipeline Integration**:
+   The GitHub Actions workflow automatically detects changes across `tenants/**/config.yaml` and reconciles all active tenant states idempotently.
+
+---
+
+## 11. GitHub Secrets & GitOps Pipeline Setup
 
 Add the following Repository Secrets under **Settings ▸ Secrets and variables ▸ Actions**:
 
 ```bash
-# PAIS REST API Secrets
-gh secret set PAIS_BASE_URL      --body "https://pais.example.com"
-gh secret set PAIS_TOKEN_URL     --body "https://idp.example.com/realms/pais/protocol/openid-connect/token"
-gh secret set PAIS_CLIENT_ID     --body "pais-client"
-gh secret set PAIS_USERNAME      --body "admin"
-gh secret set PAIS_PASSWORD      --body "your-password"
+# PAIS Shared Org Secrets
+gh secret set PAIS_SHARED_BASE_URL      --body "https://pais-shared.example.com"
+gh secret set PAIS_SHARED_TOKEN_URL     --body "https://idp.example.com/realms/shared/protocol/openid-connect/token"
+gh secret set PAIS_SHARED_CLIENT_ID     --body "pais-shared-client"
+gh secret set VCF_SHARED_ENDPOINT       --body "https://vc-shared.domain.local"
+gh secret set VCF_SHARED_API_TOKEN      --body "shared-org-vcf-api-token"
+gh secret set VCF_SHARED_NAMESPACE      --body "pais-shared-ns"
+gh secret set VCF_SHARED_PROJECT        --body "pais-shared-project"
+gh secret set SHARED_MODELS_API_TOKEN   --body "shared-backend-token-value"
 
-# vSphere / VCF Cluster Authentication Secrets
-gh secret set VCF_ENDPOINT       --body "https://vc.domain.local"
-gh secret set VCF_USER           --body "administrator@vsphere.local"
-gh secret set VCF_PASSWORD       --body "your-vsphere-password"
-gh secret set VCF_NAMESPACE      --body "your-vsphere-namespace"
-gh secret set VCF_PROJECT        --body "your-vcf-project-name"
+# PAIS All-Apps Org Secrets
+gh secret set PAIS_ALL_APPS_BASE_URL    --body "https://pais-apps.example.com"
+gh secret set PAIS_ALL_APPS_TOKEN_URL   --body "https://idp.example.com/realms/apps/protocol/openid-connect/token"
+gh secret set PAIS_ALL_APPS_CLIENT_ID   --body "pais-apps-client"
+gh secret set VCF_ALL_APPS_ENDPOINT     --body "https://vc-apps.domain.local"
+gh secret set VCF_ALL_APPS_API_TOKEN    --body "all-apps-vcf-api-token"
+gh secret set VCF_ALL_APPS_NAMESPACE    --body "pais-all-apps-ns"
+gh secret set VCF_ALL_APPS_PROJECT      --body "pais-all-apps-project"
+gh secret set ALL_APPS_BACKEND_API_TOKEN --body "apps-backend-token-value"
 
 # OCI Registry Secrets (for pulling model artifacts)
-gh secret set HARBOR_REGISTRY    --body "harbor.internal.example.com"
-gh secret set HARBOR_USERNAME    --body "robot$pais-puller"
-gh secret set HARBOR_PASSWORD    --body "your-harbor-secret"
+gh secret set HARBOR_REGISTRY           --body "harbor.internal.example.com"
+gh secret set HARBOR_USERNAME           --body "robot$pais-puller"
+gh secret set HARBOR_PASSWORD           --body "your-harbor-secret"
 ```
 
 ---

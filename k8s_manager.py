@@ -48,20 +48,31 @@ def authenticate_k8s_cluster(config: dict, dry_run: bool = False) -> bool:
         log.info("  [dry-run] K8s authentication check completed (skipped actual login).")
         return True
 
-    k8s_cfg = config.get("kubernetes", {})
+    pais_cfg = config.get("pais", {})
+    k8s_cfg = config.get("kubernetes", pais_cfg)
     vsphere_cfg = k8s_cfg.get("vsphere", {})
 
+    def _cfg_or_env(cfg_val: str, env_vars: list[str], default: str = "") -> str:
+        s_val = str(cfg_val or "").strip()
+        if s_val and not s_val.startswith("${"):
+            return s_val
+        for ev in env_vars:
+            ev_val = os.environ.get(ev, "").strip()
+            if ev_val:
+                return ev_val
+        return default
+
     # Method 1: VCF CLI Authentication (vcf context create & vcf context use)
-    v_server = os.environ.get("VCF_ENDPOINT", os.environ.get("VSPHERE_SERVER", vsphere_cfg.get("server", "")))
-    v_token = os.environ.get("VCF_API_TOKEN", vsphere_cfg.get("api_token", ""))
-    v_user = os.environ.get("VCF_USER", os.environ.get("VSPHERE_USER", vsphere_cfg.get("username", "")))
-    v_pass = os.environ.get("VCF_PASSWORD", os.environ.get("VSPHERE_PASSWORD", vsphere_cfg.get("password", "")))
-    v_type = os.environ.get("VCF_TYPE", vsphere_cfg.get("type", "cci"))
-    v_auth_type = os.environ.get("VCF_AUTH_TYPE", vsphere_cfg.get("auth_type", "basic"))
-    v_tenant = os.environ.get("VCF_TENANT_NAME", vsphere_cfg.get("tenant_name", "all-apps"))
-    v_ns = os.environ.get("VCF_NAMESPACE", os.environ.get("VSPHERE_NAMESPACE", vsphere_cfg.get("namespace", k8s_cfg.get("namespace", ""))))
-    v_project = os.environ.get("VCF_PROJECT", os.environ.get("PROJECT_NAME", vsphere_cfg.get("project_name", vsphere_cfg.get("project", ""))))
-    v_ctx_name = os.environ.get("VCF_CONTEXT_NAME", vsphere_cfg.get("context_name", "vcf05paif"))
+    v_server = _cfg_or_env(vsphere_cfg.get("server"), ["VCF_ENDPOINT", "VSPHERE_SERVER"])
+    v_token = _cfg_or_env(vsphere_cfg.get("api_token"), ["VCF_API_TOKEN"])
+    v_user = _cfg_or_env(vsphere_cfg.get("username"), ["VCF_USER", "VSPHERE_USER"])
+    v_pass = _cfg_or_env(vsphere_cfg.get("password"), ["VCF_PASSWORD", "VSPHERE_PASSWORD"])
+    v_type = _cfg_or_env(vsphere_cfg.get("type"), ["VCF_TYPE"], "cci")
+    v_auth_type = _cfg_or_env(vsphere_cfg.get("auth_type"), ["VCF_AUTH_TYPE"], "basic")
+    v_tenant = _cfg_or_env(vsphere_cfg.get("tenant_name"), ["VCF_TENANT_NAME"], "all-apps")
+    v_ns = _cfg_or_env(vsphere_cfg.get("namespace", k8s_cfg.get("namespace")), ["VCF_NAMESPACE", "VSPHERE_NAMESPACE"])
+    v_project = _cfg_or_env(vsphere_cfg.get("project_name", vsphere_cfg.get("project")), ["VCF_PROJECT", "PROJECT_NAME"])
+    v_ctx_name = _cfg_or_env(vsphere_cfg.get("context_name"), ["VCF_CONTEXT_NAME"], "vcf05paif")
 
     if v_server and (v_token or (v_user and v_pass)):
         # 1. Clean up existing context if present to ensure clean create
@@ -372,7 +383,18 @@ def build_inference_gateway_route_crd(route_cfg: dict, default_namespace: str | 
         if "tls" in backend_cfg:
             backend_spec["tls"] = backend_cfg["tls"]
         if "auth" in backend_cfg:
-            backend_spec["auth"] = backend_cfg["auth"]
+            auth_cfg = backend_cfg["auth"]
+            auth_spec = {}
+            if isinstance(auth_cfg, dict):
+                if "api_token_ref" in auth_cfg:
+                    auth_spec["apiTokenRef"] = auth_cfg["api_token_ref"]
+                elif "apiTokenRef" in auth_cfg:
+                    auth_spec["apiTokenRef"] = auth_cfg["apiTokenRef"]
+                else:
+                    auth_spec = auth_cfg
+            else:
+                auth_spec = auth_cfg
+            backend_spec["auth"] = auth_spec
         if backend_spec:
             spec["backend"] = backend_spec
 
@@ -401,7 +423,8 @@ def generate_k8s_manifests(config: dict) -> list[dict[str, Any]]:
     """
     Build all Kubernetes manifests (Secrets, ModelEndpoints, InferenceGatewayRoutes).
     """
-    k8s_cfg = config.get("kubernetes", {})
+    pais_cfg = config.get("pais", {})
+    k8s_cfg = config.get("kubernetes", pais_cfg)
     default_ns = k8s_cfg.get("namespace")  # Omit namespace if not explicitly configured
 
     manifests: list[dict[str, Any]] = []
@@ -580,7 +603,7 @@ def delete_removed_k8s_resources(old_config: dict, new_config: dict, dry_run: bo
     if not dry_run:
         authenticate_k8s_cluster(new_config, dry_run=dry_run)
 
-    default_ns = new_config.get("kubernetes", {}).get("namespace")
+    default_ns = new_config.get("kubernetes", new_config.get("pais", {})).get("namespace")
 
     for name in sorted(removed_routes):
         route = old_endpoints.get(name) or old_routes.get(name) or {}

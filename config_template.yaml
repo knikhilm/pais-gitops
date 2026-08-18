@@ -53,6 +53,13 @@ kubernetes:
     insecure: true                          # Set to true for self-signed SSL certificates / insecure HTTP
     insecure_skip_tls_verify: true          # Skip TLS verification when pulling model weights
     ca_cert: "${HARBOR_CA_CERT}"            # (Optional) PEM self-signed CA cert content
+    
+  # Method 3: API Token Secrets for InferenceGatewayRoutes
+  # Creates pais.vmware.com/api-token-credentials Secrets in the namespace
+  # so InferenceGatewayRoute objects can authenticate to external backends
+  api_tokens:
+    - name: "shared-models-token"
+      api_token: "${SHARED_MODELS_API_TOKEN}" # e.g. inject via GitHub Action Secrets
 
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (pais.vmware.com/v1alpha1 -> ModelEndpoint)
@@ -110,6 +117,9 @@ inference_routes:
       model_id: "meta-llama/Meta-Llama-3.1-8B-Instruct"
       tls:
         verification: "strict"
+      auth:
+        api_token_ref:
+          name: "shared-models-token"
 
   - name: "route-bge-small"
     namespace: "default"
