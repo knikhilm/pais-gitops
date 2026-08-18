@@ -107,7 +107,7 @@ knowledge_bases:
     index:
       name: "vcf-blogs-index"
       description: "Shared VCF blogs index"
-      embeddings_model_endpoint: "bge-small"
+      embeddings_model_endpoint: "bge-m3"
       text_splitting: "SENTENCE"
       chunk_size: 300
       chunk_overlap: 30
