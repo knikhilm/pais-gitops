@@ -56,7 +56,7 @@ model_endpoints: []
 # ============================================================
 inference_routes:
   - name: "bge-m3-llm-service"
-    type: "Completions"
+    type: "Embeddings"
     engine: "Infinity"
     matches:
       routing_name: "bge-m3-shared"
