@@ -91,6 +91,67 @@ def _is_masked(val: Any) -> bool:
     return False
 
 
+def _normalize_url(url: Any) -> str:
+    if not url:
+        return ""
+    return str(url).strip().rstrip("/")
+
+
+def _options_differ(existing_options: Any, cfg_options: Any) -> bool:
+    if not cfg_options and not existing_options:
+        return False
+    if not isinstance(cfg_options, dict):
+        return False
+    if not isinstance(existing_options, dict):
+        cfg_non_empty = {k: v for k, v in cfg_options.items() if v is not None and str(v).strip() != ""}
+        return bool(cfg_non_empty)
+
+    for k, v in cfg_options.items():
+        v_str = str(v).strip() if v is not None else ""
+        if not v_str:
+            continue
+        exist_v = existing_options.get(k)
+        exist_v_str = str(exist_v).strip() if exist_v is not None else ""
+        if v_str != exist_v_str:
+            return True
+    return False
+
+
+def _unlink_and_delete_data_source(client: pc.PAISClient, ds_id: str, ds_name: str) -> list[str]:
+    """
+    Unlink a data source from all Knowledge Bases referencing it, then delete the data source.
+    Returns a list of kb_ids that were unlinked so they can be re-linked to the new data source.
+    """
+    unlinked_kb_ids: list[str] = []
+
+    try:
+        all_kbs = client.list_all(pc.KNOWLEDGE_BASES)
+        for kb in all_kbs:
+            kb_id = kb.get("id")
+            if not kb_id:
+                continue
+            try:
+                links = client.list_all(pc.kb_data_source_links(kb_id))
+                for link in links:
+                    linked_ds_id = (link.get("data_source") or {}).get("id") or link.get("data_source_id")
+                    if linked_ds_id == ds_id:
+                        link_id = link.get("id")
+                        if link_id:
+                            client.delete(f"{pc.kb_data_source_links(kb_id)}/{link_id}")
+                            log.info("  [%s] Unlinked old data source from KB '%s' (kb_id=%s)", ds_name, kb.get("name", kb_id), kb_id)
+                            if kb_id not in unlinked_kb_ids:
+                                unlinked_kb_ids.append(kb_id)
+            except Exception as link_exc:
+                log.warning("  [%s] Could not inspect/unlink data source from KB '%s': %s", ds_name, kb_id, link_exc)
+    except Exception as kb_exc:
+        log.warning("  [%s] Could not list Knowledge Bases for unlinking: %s", ds_name, kb_exc)
+
+    client.delete(f"{pc.DATA_SOURCES}/{ds_id}")
+    log.info("  [%s] Deleted old data source (id=%s)", ds_name, ds_id)
+
+    return unlinked_kb_ids
+
+
 def update_resource(client: pc.PAISClient, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
     """
     Attempt to update an existing resource trying PATCH first, then POST, then PUT.
@@ -159,38 +220,22 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
             ds_id = existing["id"]
 
             # Data sources in PAIS only permit updating description via PATCH.
-            # Changes to immutable parameters (type, origin_url, credentials, options)
-            # require deleting and recreating the data source.
+            # Changes to immutable parameters (type, origin_url, options)
+            # require unlinking, deleting, recreating, and relinking the data source.
             immutable_changed = False
 
-            if existing.get("type") and existing.get("type") != ds_type:
+            if existing.get("type") and str(existing.get("type")).strip().upper() != str(ds_type or "").strip().upper():
                 immutable_changed = True
-            if existing.get("origin_url") and existing.get("origin_url") != origin_url:
+            if existing.get("origin_url") and _normalize_url(existing.get("origin_url")) != _normalize_url(origin_url):
                 immutable_changed = True
-            if ds.get("options") and existing.get("options") and existing.get("options") != ds.get("options"):
+            if ds.get("options") and _options_differ(existing.get("options"), ds.get("options")):
                 immutable_changed = True
 
-            existing_creds = existing.get("credentials")
-            if existing_creds is not None and isinstance(existing_creds, dict) and isinstance(credentials, dict):
-                for k, v in credentials.items():
-                    val_existing = existing_creds.get(k)
-                    if val_existing is not None and not _is_masked(val_existing):
-                        if str(val_existing).strip() != str(v).strip():
-                            immutable_changed = True
-                            break
-            elif existing_creds is not None and isinstance(existing_creds, str) and not _is_masked(existing_creds):
-                if isinstance(credentials, str) and existing_creds.strip() != credentials.strip():
-                    immutable_changed = True
-
-            description_changed = (existing.get("description", "") != description)
+            description_changed = ((existing.get("description") or "").strip() != (description or "").strip())
 
             if immutable_changed:
-                log.info("  [%s] Immutable parameter changed (type, origin_url, credentials, or options). Recreating data source...", name)
-                try:
-                    client.delete(f"{pc.DATA_SOURCES}/{ds_id}")
-                    log.info("  [%s] Deleted old data source (id=%s)", name, ds_id)
-                except Exception as del_exc:
-                    log.warning("  [%s] Failed to delete old data source '%s': %s", name, ds_id, del_exc)
+                log.info("  [%s] Immutable parameter changed (type, origin_url, or options). Unlinking, deleting, and recreating data source...", name)
+                unlinked_kb_ids = _unlink_and_delete_data_source(client, ds_id, name)
 
                 if test_conn:
                     log.info("  [%s] Testing connectivity...", name)
@@ -206,6 +251,13 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
                 new_ds_id = resp["id"]
                 name_to_id[name] = new_ds_id
                 log.info("  [%s] Recreated data source -> id=%s", name, new_ds_id)
+
+                for kb_id in unlinked_kb_ids:
+                    try:
+                        client.post(pc.kb_data_source_links(kb_id), json_body={"data_source_id": new_ds_id})
+                        log.info("  [%s] Relinked new data source (id=%s) to KB (kb_id=%s)", name, new_ds_id, kb_id)
+                    except Exception as relink_exc:
+                        log.warning("  [%s] Failed to relink new data source to KB (kb_id=%s): %s", name, kb_id, relink_exc)
 
             elif description_changed:
                 log.info("  [%s] Updating description...", name)
