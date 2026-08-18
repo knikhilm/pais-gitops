@@ -154,3 +154,17 @@ agents:
     mcp_tools:
       - server: "lab-mcp-server"
         tool_name: "Get the current time"
+
+# ============================================================
+# 7. OPENWEBUI INTEGRATION (Optional)
+# ============================================================
+openwebui:
+  enabled: true                           # Set to true to automatically configure PAIS OpenAI endpoint in OpenWebUI
+  url: "${OPENWEBUI_URL}"                 # Base URL of existing OpenWebUI instance, e.g. http://10.138.218.100:3000
+  api_key: "${OPENWEBUI_API_KEY}"         # OpenWebUI Admin API key or Bearer token
+  username: "${OPENWEBUI_USERNAME}"       # Fallback if api_key not provided
+  password: "${OPENWEBUI_PASSWORD}"       # Fallback if api_key not provided
+  verify_ssl: false                       # Verify SSL certificate for OpenWebUI URL
+  openai_base_url: "https://10.138.217.12/api/v1/compatibility/openai/v1" # PAIS OpenAI compatibility endpoint
+  default_model: "gpt-oss-20b-shared"     # Primary completion model to set as active/default in OpenWebUI
+

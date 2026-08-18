@@ -1,76 +1,69 @@
 # OpenWebUI Integration with VCF Private AI Services (PAIS)
 
-This guide details how to integrate **OpenWebUI** with VMware Cloud Foundation (VCF) Private AI Services (PAIS) using PAIS's OpenAI-compatible API endpoints and Authentik JWT Bearer tokens.
+This guide details how to automatically connect an **existing OpenWebUI installation** to VMware Cloud Foundation (VCF) Private AI Services (PAIS) using PAIS's OpenAI-compatible API endpoints and Authentik JWT Bearer tokens.
 
 ---
 
-## 1. Quick Start (Automated Setup)
+## 1. Declarative Configuration in `config.yaml`
 
-Run `setup_openwebui.py` to automatically authenticate with Authentik, acquire a JWT Bearer token, verify PAIS completion models, and generate ready-to-use OpenWebUI configuration files:
+To enable OpenWebUI auto-configuration, add the `openwebui:` block to your tenant's `config.yaml` file (e.g. `tenants/pais-all-apps/config.yaml`):
+
+```yaml
+# ============================================================
+# 7. OPENWEBUI INTEGRATION
+# ============================================================
+openwebui:
+  enabled: true                           # Set to true to automatically configure PAIS endpoint in OpenWebUI
+  url: "${OPENWEBUI_URL}"                 # Base URL of existing OpenWebUI instance, e.g. http://10.138.218.100:3000
+  api_key: "${OPENWEBUI_API_KEY}"         # OpenWebUI Admin API key or JWT Bearer token
+  username: "${OPENWEBUI_USERNAME}"       # Fallback if api_key not provided
+  password: "${OPENWEBUI_PASSWORD}"       # Fallback if api_key not provided
+  verify_ssl: false                       # Verify SSL certificate for OpenWebUI URL
+  openai_base_url: "https://10.138.217.12/api/v1/compatibility/openai/v1" # PAIS OpenAI compatibility endpoint
+  default_model: "gpt-oss-20b-shared"     # Primary completion model to set as active/default in OpenWebUI
+```
+
+---
+
+## 2. Automated GitOps Execution
+
+When you run `setup_pais.py` or the multi-tenant GitOps orchestrator (`reconcile_all.py`), Step 7 automatically configures your OpenWebUI instance:
+
+```bash
+# Reconcile PAIS resources & auto-configure OpenWebUI:
+python setup_pais.py --config tenants/pais-all-apps/config.yaml
+```
+
+### What Happens During Reconciliation:
+1. **Acquires Bearer JWT Token**: Authenticates against Authentik OIDC using PAIS credentials in `config.yaml` to acquire a valid Bearer JWT token.
+2. **Discovers PAIS Models**: Verifies `GET <PAIS_OPENAI_URL>/models` and lists available completion models (e.g., `gpt-oss-20b-shared`, `gpt-oss-20b`, agents).
+3. **Connects to OpenWebUI**: Authenticates with your running OpenWebUI instance using `openwebui.api_key` (or username/password signin).
+4. **Updates OpenAI Connections**: Reads current OpenWebUI connection settings (`GET /api/v1/configs/openai`) and adds/updates the tenant's PAIS OpenAI URL and JWT token (`POST /api/v1/configs/openai`), preserving any existing non-PAIS connections.
+5. **Verifies Chat Readiness**: Sends a test completion request to PAIS to ensure the model is initialized and ready for chat.
+
+---
+
+## 3. Standalone Execution
+
+You can also run the OpenWebUI integration script standalone at any time:
 
 ```bash
 python setup_openwebui.py --config tenants/pais-all-apps/config.yaml
 ```
 
-### What `setup_openwebui.py` Does:
-1. **Acquires Bearer JWT Token**: Authenticates against Authentik OIDC using credentials in `config.yaml`.
-2. **Discovers Models**: Verifies `GET https://10.138.217.12/api/v1/compatibility/openai/v1/models` and lists available completion models (e.g. `gpt-oss-20b-shared`, `gpt-oss-20b`).
-3. **Tests Chat Completion**: Sends a test completion request to PAIS to ensure the model is initialized and ready to chat.
-4. **Generates Docker Configs**: Creates `.env.openwebui` and `docker-compose.openwebui.yml` pre-populated with PAIS endpoints and the JWT token.
-
 ---
 
-## 2. Launching OpenWebUI
+## 4. Manual Connection Configuration (OpenWebUI Web Interface)
 
-Launch OpenWebUI using Docker Compose:
+If you prefer to configure OpenWebUI via the browser UI:
 
-```bash
-docker compose -f docker-compose.openwebui.yml up -d
-```
-
-Open your browser to [http://localhost:3000](http://localhost:3000). OpenWebUI will start with PAIS pre-configured as its primary LLM provider and default model `gpt-oss-20b-shared` selected for chat!
-
----
-
-## 3. Manual Connection Configuration (OpenWebUI Web Interface)
-
-If you already have OpenWebUI running, you can connect it to PAIS via the web interface:
-
-1. Open **OpenWebUI** -> Go to **Admin Panel** -> **Settings** -> **Connections**.
+1. Log in to **OpenWebUI** -> Go to **Admin Panel** -> **Settings** -> **Connections**.
 2. Under **OpenAI API Connections**:
    * **URL / Base API**: `https://10.138.217.12/api/v1/compatibility/openai/v1`
    * **API Key**: `<YOUR_AUTHENTIK_JWT_BEARER_TOKEN>`
-3. Click **Verify Connection** (the refresh icon). OpenWebUI will query PAIS `/v1/models` and load all available PAIS models and agents.
+3. Click **Verify Connection** (refresh icon). OpenWebUI will query PAIS `/v1/models` and discover all PAIS models and agents.
 4. Save the configuration.
-5. In the chat interface, select **`gpt-oss-20b-shared`** (or your PAIS model/agent) from the top dropdown menu and start chatting!
-
----
-
-## 4. How PAIS Authentication Works with OpenWebUI
-
-PAIS OpenAI-compatible endpoints require a **Bearer JWT Token** in the HTTP request header:
-
-```http
-Authorization: Bearer eyJhbGciOiJSUzI1NiIs...
-```
-
-### Fetching a Bearer JWT Token via `curl`
-
-To fetch a Bearer JWT token directly using `curl`:
-
-```bash
-JWT_TOKEN=$(curl -k -s -X POST "https://auth01.vcf05.showcase.tmm.broadcom.lab/application/o/token/" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=password" \
-  -d "client_id=ipSk5yCnmjRUMjSW3YQ7ikPUhJDU82pi0uz9mC2i" \
-  -d "username=pais-user" \
-  -d "password=YOUR_APP_PASSWORD" \
-  -d "scope=openid groups offline_access" | jq -r '.access_token')
-
-echo "JWT Token: $JWT_TOKEN"
-```
-
-> **Note**: Standard OIDC user passwords may require an **App Password** generated under **Authentik -> User Profile Settings -> App Passwords** or a permanent API token (`expiring: false`).
+5. Select **`gpt-oss-20b-shared`** from the model dropdown and start chatting!
 
 ---
 
@@ -82,7 +75,7 @@ echo "JWT Token: $JWT_TOKEN"
 | **Models Discovery** | `GET https://10.138.217.12/api/v1/compatibility/openai/v1/models` |
 | **Chat Completion** | `POST https://10.138.217.12/api/v1/compatibility/openai/v1/chat/completions` |
 | **Authentik OIDC Token URL** | `https://auth01.vcf05.showcase.tmm.broadcom.lab/application/o/token/` |
-| **OpenWebUI Local URL** | `http://localhost:3000` |
+| **OpenWebUI API Config Endpoint** | `POST http://<openwebui-host>:3000/api/v1/configs/openai` |
 
 ---
 

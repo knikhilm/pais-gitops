@@ -1,16 +1,20 @@
 """
 OpenWebUI Integration for VCF Private AI Services (PAIS)
 ========================================================
-Connects OpenWebUI to PAIS OpenAI-Compatible Endpoints:
-  1. Acquires a valid JWT Bearer token from Authentik OIDC / PAIS.
-  2. Verifies connection to PAIS OpenAI API (e.g. https://10.138.217.12/api/v1/compatibility/openai/v1).
-  3. Discovers available completion models (e.g. gpt-oss-20b-shared, gpt-oss-20b, agents).
-  4. Tests a sample Chat Completion request against PAIS.
-  5. Configures OpenWebUI via REST API (if running) or generates pre-configured
-     `docker-compose.openwebui.yml` and `.env.openwebui` files ready for chat.
+Declaratively configures an existing OpenWebUI instance with PAIS OpenAI API endpoints
+using credentials and settings specified under the `openwebui:` section in `config.yaml`.
 
-Usage:
-  python setup_openwebui.py [--config tenants/pais-all-apps/config.yaml] [--openwebui-url http://localhost:3000]
+Configuration Schema in config.yaml:
+-------------------------------------
+openwebui:
+  enabled: true                           # Set to true to enable auto-configuration
+  url: "${OPENWEBUI_URL}"                 # Base URL of existing OpenWebUI instance, e.g. http://10.138.218.100:3000
+  api_key: "${OPENWEBUI_API_KEY}"         # OpenWebUI Admin API key or Bearer token
+  username: "${OPENWEBUI_USERNAME}"       # Fallback if api_key not provided
+  password: "${OPENWEBUI_PASSWORD}"       # Fallback if api_key not provided
+  verify_ssl: false                       # Verify SSL certificate for OpenWebUI URL
+  openai_base_url: ""                     # Optional override (defaults to tenant PAIS OpenAI URL: <pais.base_url>/api/v1/compatibility/openai/v1)
+  default_model: "gpt-oss-20b-shared"     # Optional completion model to verify and select
 """
 
 from __future__ import annotations
@@ -27,39 +31,192 @@ import pais_client as pc
 log = logging.getLogger("pais_openwebui")
 
 
-def fetch_jwt_token(cfg: dict) -> str:
-    """Acquire a Bearer JWT token from Authentik/PAIS using configuration settings."""
+def _is_enabled(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes", "on")
+    return False
+
+
+def _resolve_val(val: Any, env_vars: list[str], default: str = "") -> str:
+    s_val = str(val or "").strip()
+    if s_val and not s_val.startswith("${"):
+        return s_val
+    for ev in env_vars:
+        ev_val = os.environ.get(ev, "").strip()
+        if ev_val:
+            return ev_val
+    return default
+
+
+def get_openwebui_auth_token(owui_url: str, api_key: str, username: str, password: str, verify_ssl: bool = False) -> str:
+    """Obtain OpenWebUI API Bearer token using direct API key or username/password signin."""
+    if api_key:
+        return api_key
+
+    if username and password:
+        log.info("Signing into OpenWebUI API at '%s' as user '%s'...", owui_url, username)
+        signin_url = f"{owui_url.rstrip('/')}/api/v1/auths/signin"
+        payload = {"email": username, "password": password}
+        try:
+            with httpx.Client(verify=verify_ssl, timeout=15) as client:
+                resp = client.post(signin_url, json=payload)
+                if resp.status_code == 200:
+                    token = resp.json().get("token")
+                    if token:
+                        log.info("Successfully signed into OpenWebUI and acquired API token.")
+                        return token
+                log.warning("OpenWebUI signin returned status [%d]: %s", resp.status_code, resp.text)
+        except Exception as exc:
+            log.warning("Exception during OpenWebUI signin: %s", exc)
+
+    return ""
+
+
+def apply_openwebui_integration(cfg: dict, client: pc.PAISClient | None = None, dry_run: bool = False) -> bool:
+    """
+    Declaratively connects an existing OpenWebUI instance to PAIS OpenAI API compatibility endpoint
+    using settings under the `openwebui:` section in `config.yaml`.
+    """
+    log.info("=== Step 7: OpenWebUI Integration ===")
+
+    owui_cfg = cfg.get("openwebui", {})
+    if not _is_enabled(owui_cfg.get("enabled")):
+        log.info("  OpenWebUI integration is disabled or omitted in config (skip).")
+        return False
+
+    # 1. Resolve OpenWebUI Instance Connection Details
+    owui_url = _resolve_val(owui_cfg.get("url"), ["OPENWEBUI_URL", "OPENWEBUI_BASE_URL"])
+    if not owui_url:
+        log.warning("  OpenWebUI integration enabled, but 'url' is not provided in config or OPENWEBUI_URL env var - skip.")
+        return False
+    owui_url = owui_url.rstrip("/")
+
+    owui_api_key = _resolve_val(owui_cfg.get("api_key"), ["OPENWEBUI_API_KEY", "OPENWEBUI_KEY", "OPENWEBUI_TOKEN"])
+    owui_username = _resolve_val(owui_cfg.get("username"), ["OPENWEBUI_USERNAME", "OPENWEBUI_USER"])
+    owui_password = _resolve_val(owui_cfg.get("password"), ["OPENWEBUI_PASSWORD", "OPENWEBUI_PASS"])
+    owui_verify_ssl = owui_cfg.get("verify_ssl", False)
+
+    # 2. Resolve Target PAIS OpenAI Endpoint & Acquire PAIS Bearer JWT Token
     pais_cfg = cfg.get("pais", {})
     base_url, auth_cfg, verify_ssl = pc.resolve_connection(pais_cfg)
 
-    # Check for direct static token in config or env
-    static_token = os.environ.get("PAIS_TOKEN") or os.environ.get("PAIS_API_TOKEN") or auth_cfg.get("token")
-    if static_token and static_token.strip() and not static_token.startswith("${"):
-        log.info("Using explicit static Bearer token.")
-        return static_token.strip()
-
-    log.info("Authenticating with Authentik OIDC to acquire Bearer JWT token...")
-    auth_handler = pc.build_auth(auth_cfg, verify_ssl=verify_ssl)
-
-    if isinstance(auth_handler, pc.OIDCAuth):
-        token = auth_handler._fetch_token()
-        return token
-    elif isinstance(auth_handler, pc.BearerAuth):
-        return auth_handler.token
+    custom_openai_url = _resolve_val(owui_cfg.get("openai_base_url"), ["PAIS_OPENAI_URL"])
+    if custom_openai_url:
+        pais_openai_url = custom_openai_url.rstrip("/")
     else:
-        raise RuntimeError("Unsupported authentication handler type.")
+        pais_openai_url = f"{base_url.rstrip('/')}/api/v1/compatibility/openai/v1"
+
+    # Acquire PAIS Bearer JWT Token
+    pais_jwt_token = ""
+    if client and getattr(client, "auth", None):
+        if isinstance(client.auth, pc.BearerAuth):
+            pais_jwt_token = client.auth.token
+        elif isinstance(client.auth, pc.OIDCAuth):
+            try:
+                pais_jwt_token = client.auth._fetch_token()
+            except Exception as auth_exc:
+                log.warning("  Could not fetch fresh PAIS OIDC token from active client: %s", auth_exc)
+
+    if not pais_jwt_token:
+        static_tok = _resolve_val(auth_cfg.get("token") or auth_cfg.get("api_token"), ["PAIS_TOKEN", "PAIS_API_TOKEN"])
+        if static_tok:
+            pais_jwt_token = static_tok
+        elif auth_cfg.get("token_url"):
+            auth_handler = pc.build_auth(auth_cfg, verify_ssl=verify_ssl)
+            if isinstance(auth_handler, pc.OIDCAuth):
+                pais_jwt_token = auth_handler._fetch_token()
+            elif isinstance(auth_handler, pc.BearerAuth):
+                pais_jwt_token = auth_handler.token
+
+    if not pais_jwt_token:
+        log.error("  Failed to acquire PAIS Bearer JWT Token for OpenWebUI connection.")
+        return False
+
+    log.info("  Target OpenWebUI URL : %s", owui_url)
+    log.info("  Target PAIS OpenAI URL: %s", pais_openai_url)
+    log.info("  Acquired PAIS JWT Token (length: %d chars)", len(pais_jwt_token))
+
+    if dry_run:
+        log.info("  [dry-run] Would configure OpenWebUI at '%s' with PAIS OpenAI endpoint '%s'", owui_url, pais_openai_url)
+        return True
+
+    # 3. Authenticate with OpenWebUI
+    owui_token = get_openwebui_auth_token(
+        owui_url, owui_api_key, owui_username, owui_password, verify_ssl=owui_verify_ssl
+    )
+    headers = {"Content-Type": "application/json"}
+    if owui_token:
+        headers["Authorization"] = f"Bearer {owui_token}"
+
+    # 4. Fetch Existing OpenAI Connections from OpenWebUI & Update with PAIS Endpoint
+    try:
+        with httpx.Client(verify=owui_verify_ssl, timeout=20) as ow_client:
+            configs_url = f"{owui_url}/api/v1/configs/openai"
+            get_resp = ow_client.get(configs_url, headers=headers)
+
+            base_urls: list[str] = []
+            api_keys: list[str] = []
+
+            if get_resp.status_code == 200:
+                cur_data = get_resp.json()
+                base_urls = list(cur_data.get("OPENAI_API_BASE_URLS", []) or [])
+                api_keys = list(cur_data.get("OPENAI_API_KEYS", []) or [])
+            else:
+                log.info("  OpenWebUI GET /api/v1/configs/openai returned status [%d] - initializing new config.", get_resp.status_code)
+
+            # Check if PAIS OpenAI URL already present in base_urls
+            matched_index = -1
+            for idx, u in enumerate(base_urls):
+                if u.rstrip("/") == pais_openai_url.rstrip("/"):
+                    matched_index = idx
+                    break
+
+            if matched_index >= 0:
+                log.info("  PAIS OpenAI endpoint already exists in OpenWebUI at index %d. Updating JWT key...", matched_index)
+                base_urls[matched_index] = pais_openai_url
+                if matched_index < len(api_keys):
+                    api_keys[matched_index] = pais_jwt_token
+                else:
+                    api_keys.append(pais_jwt_token)
+            else:
+                log.info("  Adding new PAIS OpenAI endpoint '%s' to OpenWebUI connection list...", pais_openai_url)
+                base_urls.append(pais_openai_url)
+                api_keys.append(pais_jwt_token)
+
+            # Ensure matching lengths
+            while len(api_keys) < len(base_urls):
+                api_keys.append(pais_jwt_token)
+
+            payload = {
+                "ENABLE_OPENAI_API": True,
+                "OPENAI_API_BASE_URLS": base_urls,
+                "OPENAI_API_KEYS": api_keys,
+            }
+
+            post_resp = ow_client.post(configs_url, headers=headers, json=payload)
+            if post_resp.status_code in (200, 201):
+                log.info("  Successfully updated OpenAI API Connection in OpenWebUI at '%s'!", owui_url)
+            else:
+                log.warning("  OpenWebUI POST /api/v1/configs/openai returned status [%d]: %s", post_resp.status_code, post_resp.text)
+
+            # 5. Verify Model Sync and Readiness
+            target_model = owui_cfg.get("default_model") or "gpt-oss-20b-shared"
+            _verify_pais_models_and_chat(pais_openai_url, pais_jwt_token, target_model, verify_ssl=verify_ssl)
+
+            return True
+
+    except Exception as exc:
+        log.error("  Failed to configure OpenWebUI instance at '%s': %s", owui_url, exc)
+        return False
 
 
-def test_pais_openai_endpoint(base_openai_url: str, jwt_token: str, verify_ssl: bool = False) -> list[str]:
-    """
-    Test GET /v1/models against PAIS OpenAI-compatible endpoint.
-    Returns list of discovered model IDs.
-    """
-    norm_url = base_openai_url.rstrip("/")
-    models_url = f"{norm_url}/models" if not norm_url.endswith("/models") else norm_url
-
-    log.info("Testing PAIS OpenAI endpoint at '%s'...", models_url)
-
+def _verify_pais_models_and_chat(pais_openai_url: str, jwt_token: str, target_model: str, verify_ssl: bool = False) -> None:
+    """Verify that PAIS OpenAI models endpoint lists completion models and test a chat completion."""
+    models_url = f"{pais_openai_url.rstrip('/')}/models"
     headers = {
         "Authorization": f"Bearer {jwt_token}",
         "Content-Type": "application/json",
@@ -68,166 +225,40 @@ def test_pais_openai_endpoint(base_openai_url: str, jwt_token: str, verify_ssl: 
     try:
         with httpx.Client(verify=verify_ssl, timeout=30) as client:
             resp = client.get(models_url, headers=headers)
-            if resp.status_code != 200:
-                log.error("Failed to connect to PAIS OpenAI endpoint [%d]: %s", resp.status_code, resp.text)
-                raise RuntimeError(f"PAIS OpenAI models request returned status {resp.status_code}")
-
-            data = resp.json()
-            models_list = data.get("data", [])
-            model_ids = [m.get("id") for m in models_list if m.get("id")]
-
-            log.info("Successfully connected to PAIS OpenAI API! Discovered %d model(s): %s", len(model_ids), model_ids)
-            return model_ids
-    except Exception as exc:
-        log.error("Exception connecting to PAIS OpenAI endpoint '%s': %s", models_url, exc)
-        raise
-
-
-def test_chat_completion(base_openai_url: str, jwt_token: str, model_id: str, verify_ssl: bool = False) -> bool:
-    """Send a sample chat completion request to verify PAIS model readiness."""
-    norm_url = base_openai_url.rstrip("/")
-    if norm_url.endswith("/models"):
-        norm_url = norm_url[:-7].rstrip("/")
-    chat_url = f"{norm_url}/chat/completions"
-
-    log.info("Sending test Chat Completion to PAIS for model '%s' at '%s'...", model_id, chat_url)
-
-    headers = {
-        "Authorization": f"Bearer {jwt_token}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": model_id,
-        "messages": [
-            {"role": "user", "content": "Hello! Reply with 'PAIS OpenWebUI Integration Ready'."}
-        ],
-        "max_tokens": 50,
-        "temperature": 0.2,
-    }
-
-    try:
-        with httpx.Client(verify=verify_ssl, timeout=60) as client:
-            resp = client.post(chat_url, headers=headers, json=payload)
             if resp.status_code == 200:
-                data = resp.json()
-                choices = data.get("choices", [])
-                if choices:
-                    content = choices[0].get("message", {}).get("content", "").strip()
-                    log.info("Chat Completion Successful! Response: '%s'", content)
-                    return True
-                else:
-                    log.warning("Chat Completion returned 200 OK but no choices in response: %s", data)
-                    return True
-            else:
-                log.warning("Chat Completion test returned status [%d]: %s", resp.status_code, resp.text)
-                return False
-    except Exception as exc:
-        log.warning("Exception during test Chat Completion: %s", exc)
-        return False
+                models_data = resp.json()
+                model_ids = [m.get("id") for m in models_data.get("data", []) if m.get("id")]
+                log.info("  Verified PAIS OpenAI models available (%d model(s)): %s", len(model_ids), model_ids)
 
+                if model_ids and target_model not in model_ids:
+                    target_model = model_ids[0]
 
-def generate_openwebui_env_and_compose(
-    base_openai_url: str,
-    jwt_token: str,
-    model_id: str,
-    out_dir: str = ".",
-) -> None:
-    """Generate .env.openwebui and docker-compose.openwebui.yml files for OpenWebUI."""
-    env_content = f"""# OpenWebUI Pre-configured Environment for PAIS Integration
-OPENAI_API_BASE_URL={base_openai_url}
-OPENAI_API_KEY={jwt_token}
-OPENAI_API_BASE_URLS={base_openai_url}
-OPENAI_API_KEYS={jwt_token}
-ENABLE_OPENAI_API=true
-DEFAULT_MODELS={model_id}
-WEBUI_NAME=PAIS Private AI Services
-"""
-
-    compose_content = f"""version: '3.8'
-
-services:
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: pais-open-webui
-    ports:
-      - "3000:8080"
-    environment:
-      - OPENAI_API_BASE_URL={base_openai_url}
-      - OPENAI_API_KEY={jwt_token}
-      - OPENAI_API_BASE_URLS={base_openai_url}
-      - OPENAI_API_KEYS={jwt_token}
-      - ENABLE_OPENAI_API=true
-      - DEFAULT_MODELS={model_id}
-      - WEBUI_NAME=PAIS Private AI Services
-    volumes:
-      - open-webui-data:/app/backend/data
-    restart: always
-
-volumes:
-  open-webui-data:
-"""
-
-    env_path = os.path.join(out_dir, ".env.openwebui")
-    compose_path = os.path.join(out_dir, "docker-compose.openwebui.yml")
-
-    with open(env_path, "w", encoding="utf-8") as f:
-        f.write(env_content)
-    log.info("Generated OpenWebUI environment file: %s", env_path)
-
-    with open(compose_path, "w", encoding="utf-8") as f:
-        f.write(compose_content)
-    log.info("Generated OpenWebUI docker-compose file: %s", compose_path)
-
-
-def configure_running_openwebui(
-    openwebui_url: str,
-    base_openai_url: str,
-    jwt_token: str,
-    model_id: str,
-    api_key: str | None = None,
-) -> bool:
-    """Attempt to configure an already-running OpenWebUI instance via its REST API."""
-    norm_url = openwebui_url.rstrip("/")
-    log.info("Attempting to auto-configure running OpenWebUI instance at '%s'...", norm_url)
-
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    try:
-        with httpx.Client(verify=False, timeout=15) as client:
-            # Check if OpenWebUI is reachable
-            health_resp = client.get(f"{norm_url}/api/v1/configs")
-            if health_resp.status_code in (200, 401, 403):
-                log.info("OpenWebUI instance is reachable at %s", norm_url)
-                # Try updating OpenAI connection settings if endpoint available
-                config_payload = {
-                    "ENABLE_OPENAI_API": True,
-                    "OPENAI_API_BASE_URLS": [base_openai_url],
-                    "OPENAI_API_KEYS": [jwt_token],
-                    "DEFAULT_MODELS": model_id,
+                # Test Chat Completion
+                chat_url = f"{pais_openai_url.rstrip('/')}/chat/completions"
+                chat_payload = {
+                    "model": target_model,
+                    "messages": [{"role": "user", "content": "Hello! Confirm OpenWebUI connection status."}],
+                    "max_tokens": 30,
+                    "temperature": 0.1,
                 }
-                cfg_resp = client.post(f"{norm_url}/api/v1/configs/openai", headers=headers, json=config_payload)
-                if cfg_resp.status_code in (200, 201):
-                    log.info("Successfully updated OpenAI API Connection settings in OpenWebUI!")
-                    return True
+                chat_resp = client.post(chat_url, headers=headers, json=chat_payload)
+                if chat_resp.status_code == 200:
+                    choices = chat_resp.json().get("choices", [])
+                    if choices:
+                        ans = choices[0].get("message", {}).get("content", "").strip()
+                        log.info("  PAIS Chat Completion test successful for model '%s': '%s'", target_model, ans)
                 else:
-                    log.info("OpenWebUI API config update returned status [%d] (manual UI setup available).", cfg_resp.status_code)
+                    log.info("  PAIS Chat Completion test returned status [%d] for model '%s'", chat_resp.status_code, target_model)
             else:
-                log.info("OpenWebUI not currently running at %s (will rely on Docker startup config).", norm_url)
+                log.warning("  PAIS OpenAI models endpoint returned status [%d]", resp.status_code)
     except Exception as exc:
-        log.info("OpenWebUI instance not directly reachable at %s (%s).", norm_url, exc)
-
-    return False
+        log.warning("  Could not verify PAIS OpenAI chat completion: %s", exc)
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Configure OpenWebUI connection to PAIS OpenAI API.")
     parser.add_argument("--config", default="tenants/pais-all-apps/config.yaml", help="Path to tenant config.yaml")
-    parser.add_argument("--openai-url", help="Override PAIS OpenAI endpoint URL (e.g. https://10.138.217.12/api/v1/compatibility/openai/v1)")
-    parser.add_argument("--openwebui-url", default="http://localhost:3000", help="URL of running OpenWebUI instance")
-    parser.add_argument("--jwt-token", help="Override Bearer JWT token directly")
-    parser.add_argument("--model", help="Override default completion model ID")
+    parser.add_argument("--dry-run", action="store_true", help="Print actions without making API calls")
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
 
     args = parser.parse_args(argv)
@@ -237,62 +268,17 @@ def main(argv: list[str] | None = None) -> None:
     log.info("OPENWEBUI INTEGRATION FOR VCF PRIVATE AI SERVICES (PAIS)")
     log.info("==========================================================================")
 
-    # 1. Load tenant configuration
-    cfg = pc.load_config(args.config) if os.path.exists(args.config) else {}
+    if not os.path.exists(args.config):
+        log.error("Config file '%s' not found.", args.config)
+        sys.exit(1)
 
-    # Determine PAIS OpenAI Base URL
-    base_openai_url = args.openai_url
-    if not base_openai_url:
-        # Fallback to config or default standard IP
-        base_openai_url = "https://10.138.217.12/api/v1/compatibility/openai/v1"
+    cfg = pc.load_config(args.config)
+    success = apply_openwebui_integration(cfg, dry_run=args.dry_run)
 
-    log.info("Target PAIS OpenAI Endpoint: %s", base_openai_url)
-
-    # 2. Acquire Bearer JWT Token
-    jwt_token = args.jwt_token
-    if not jwt_token:
-        jwt_token = fetch_jwt_token(cfg)
-
-    log.info("Acquired Bearer JWT Token (length: %d chars)", len(jwt_token))
-
-    # 3. Test PAIS OpenAI Endpoint & Discover Models
-    discovered_models = test_pais_openai_endpoint(base_openai_url, jwt_token, verify_ssl=False)
-
-    # Select Completion Model
-    selected_model = args.model
-    if not selected_model:
-        if "gpt-oss-20b-shared" in discovered_models:
-            selected_model = "gpt-oss-20b-shared"
-        elif "gpt-oss-20b" in discovered_models:
-            selected_model = "gpt-oss-20b"
-        elif discovered_models:
-            selected_model = discovered_models[0]
-        else:
-            selected_model = "gpt-oss-20b-shared"
-
-    log.info("Selected Primary Completion Model: '%s'", selected_model)
-
-    # 4. Test Chat Completion
-    test_chat_completion(base_openai_url, jwt_token, selected_model, verify_ssl=False)
-
-    # 5. Generate Docker Compose & Env Files
-    generate_openwebui_env_and_compose(base_openai_url, jwt_token, selected_model)
-
-    # 6. Attempt Direct Configuration of Running OpenWebUI instance
-    configure_running_openwebui(args.openwebui_url, base_openai_url, jwt_token, selected_model)
-
-    log.info("")
-    log.info("==========================================================================")
-    log.info("OPENWEBUI SETUP READY!")
-    log.info("==========================================================================")
-    log.info("1. Start OpenWebUI with pre-configured PAIS connection:")
-    log.info("   docker compose -f docker-compose.openwebui.yml up -d")
-    log.info("")
-    log.info("2. Or add connection manually in OpenWebUI UI (Settings -> Connections -> OpenAI):")
-    log.info("   - API Base URL : %s", base_openai_url)
-    log.info("   - API Key      : %s...", jwt_token[:20])
-    log.info("   - Model        : %s", selected_model)
-    log.info("==========================================================================")
+    if success:
+        log.info("OpenWebUI integration completed successfully!")
+    else:
+        log.info("OpenWebUI integration was skipped or encountered warnings.")
 
 
 if __name__ == "__main__":
