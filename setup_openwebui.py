@@ -76,6 +76,112 @@ def get_openwebui_auth_token(owui_url: str, api_key: str, username: str, passwor
     return ""
 
 
+def should_remove_openwebui(cfg: dict) -> bool:
+    """Return True if the configuration explicitly requests removal of OpenWebUI connection/models."""
+    owui_cfg = cfg.get("openwebui")
+    if not isinstance(owui_cfg, dict):
+        return False
+
+    if owui_cfg.get("remove") is True or str(owui_cfg.get("state")).lower() in ("absent", "remove", "delete"):
+        return True
+
+    if owui_cfg.get("enabled") is False and (owui_cfg.get("url") or os.environ.get("OPENWEBUI_URL")):
+        return True
+
+    return False
+
+
+def remove_openwebui_integration(cfg: dict, dry_run: bool = False) -> bool:
+    """
+    Removes the tenant's PAIS OpenAI API connection and all associated PAIS models from an OpenWebUI instance.
+    """
+    log.info("=== Step 7: OpenWebUI Connection & Model Removal ===")
+
+    owui_cfg = cfg.get("openwebui", {})
+    owui_url = _resolve_val(owui_cfg.get("url"), ["OPENWEBUI_URL", "OPENWEBUI_BASE_URL"])
+    if not owui_url:
+        log.info("  OpenWebUI URL not provided in config or OPENWEBUI_URL env var - skipping removal.")
+        return False
+    owui_url = owui_url.rstrip("/")
+
+    owui_api_key = _resolve_val(owui_cfg.get("api_key"), ["OPENWEBUI_API_KEY", "OPENWEBUI_KEY", "OPENWEBUI_TOKEN"])
+    owui_username = _resolve_val(owui_cfg.get("username"), ["OPENWEBUI_USERNAME", "OPENWEBUI_USER"])
+    owui_password = _resolve_val(owui_cfg.get("password"), ["OPENWEBUI_PASSWORD", "OPENWEBUI_PASS"])
+    owui_verify_ssl = owui_cfg.get("verify_ssl", False)
+
+    pais_cfg = cfg.get("pais", {})
+    base_url, _, _ = pc.resolve_connection(pais_cfg)
+
+    custom_openai_url = _resolve_val(owui_cfg.get("openai_base_url"), ["PAIS_OPENAI_URL"])
+    if custom_openai_url:
+        pais_openai_url = custom_openai_url.rstrip("/")
+    elif base_url:
+        pais_openai_url = f"{base_url.rstrip('/')}/api/v1/compatibility/openai/v1"
+    else:
+        log.warning("  Could not resolve PAIS OpenAI URL for OpenWebUI removal.")
+        return False
+
+    log.info("  Target OpenWebUI URL     : %s", owui_url)
+    log.info("  PAIS OpenAI URL to remove: %s", pais_openai_url)
+
+    if dry_run:
+        log.info("  [dry-run] Would remove PAIS OpenAI endpoint '%s' and its models from OpenWebUI at '%s'", pais_openai_url, owui_url)
+        return True
+
+    # Authenticate with OpenWebUI
+    owui_token = get_openwebui_auth_token(
+        owui_url, owui_api_key, owui_username, owui_password, verify_ssl=owui_verify_ssl
+    )
+    headers = {"Content-Type": "application/json"}
+    if owui_token:
+        headers["Authorization"] = f"Bearer {owui_token}"
+
+    try:
+        with httpx.Client(verify=owui_verify_ssl, timeout=20) as ow_client:
+            configs_url = f"{owui_url}/api/v1/configs/openai"
+            get_resp = ow_client.get(configs_url, headers=headers)
+
+            if get_resp.status_code != 200:
+                log.warning("  OpenWebUI GET /api/v1/configs/openai returned status [%d] - cannot perform removal.", get_resp.status_code)
+                return False
+
+            cur_data = get_resp.json()
+            base_urls = list(cur_data.get("OPENAI_API_BASE_URLS", []) or [])
+            api_keys = list(cur_data.get("OPENAI_API_KEYS", []) or [])
+
+            indices_to_remove = []
+            for idx, u in enumerate(base_urls):
+                if u.rstrip("/") == pais_openai_url.rstrip("/"):
+                    indices_to_remove.append(idx)
+
+            if not indices_to_remove:
+                log.info("  PAIS OpenAI endpoint '%s' not found in OpenWebUI connections (already removed or absent).", pais_openai_url)
+                return True
+
+            for idx in sorted(indices_to_remove, reverse=True):
+                del base_urls[idx]
+                if idx < len(api_keys):
+                    del api_keys[idx]
+
+            payload = {
+                "ENABLE_OPENAI_API": bool(base_urls),
+                "OPENAI_API_BASE_URLS": base_urls,
+                "OPENAI_API_KEYS": api_keys,
+            }
+
+            post_resp = ow_client.post(configs_url, headers=headers, json=payload)
+            if post_resp.status_code in (200, 201):
+                log.info("  Successfully removed PAIS OpenAI connection '%s' and associated models from OpenWebUI at '%s'!", pais_openai_url, owui_url)
+                return True
+            else:
+                log.warning("  OpenWebUI POST /api/v1/configs/openai returned status [%d]: %s", post_resp.status_code, post_resp.text)
+                return False
+
+    except Exception as exc:
+        log.error("  Failed to remove PAIS connection from OpenWebUI at '%s': %s", owui_url, exc)
+        return False
+
+
 def apply_openwebui_integration(cfg: dict, client: pc.PAISClient | None = None, dry_run: bool = False) -> bool:
     """
     Declaratively connects an existing OpenWebUI instance to PAIS OpenAI API compatibility endpoint

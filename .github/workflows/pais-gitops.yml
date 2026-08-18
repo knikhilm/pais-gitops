@@ -99,6 +99,13 @@ jobs:
       HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
       HARBOR_INSECURE: ${{ secrets.HARBOR_INSECURE || 'true' }}
       HARBOR_CA_CERT: ${{ secrets.HARBOR_CA_CERT }}
+
+      # --- OpenWebUI Integration Secrets ---
+      OPENWEBUI_URL: ${{ secrets.OPENWEBUI_URL }}
+      OPENWEBUI_API_KEY: ${{ secrets.OPENWEBUI_API_KEY }}
+      OPENWEBUI_USERNAME: ${{ secrets.OPENWEBUI_USERNAME }}
+      OPENWEBUI_PASSWORD: ${{ secrets.OPENWEBUI_PASSWORD }}
+
       DRY_RUN_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
 
     steps:

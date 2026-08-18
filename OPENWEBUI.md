@@ -25,21 +25,40 @@ openwebui:
 
 ---
 
-## 2. Automated GitOps Execution
+## 2. Automated GitOps Execution & GitHub Actions
 
-When you run `setup_pais.py` or the multi-tenant GitOps orchestrator (`reconcile_all.py`), Step 7 automatically configures your OpenWebUI instance:
+When you run `setup_pais.py`, `cleanup_pais.py`, or the GitHub Actions pipeline (`pais-gitops.yml`), OpenWebUI connections and models are automatically managed:
 
 ```bash
 # Reconcile PAIS resources & auto-configure OpenWebUI:
 python setup_pais.py --config tenants/pais-all-apps/config.yaml
 ```
 
-### What Happens During Reconciliation:
-1. **Acquires Bearer JWT Token**: Authenticates against Authentik OIDC using PAIS credentials in `config.yaml` to acquire a valid Bearer JWT token.
-2. **Discovers PAIS Models**: Verifies `GET <PAIS_OPENAI_URL>/models` and lists available completion models (e.g., `gpt-oss-20b-shared`, `gpt-oss-20b`, agents).
-3. **Connects to OpenWebUI**: Authenticates with your running OpenWebUI instance using `openwebui.api_key` (or username/password signin).
-4. **Updates OpenAI Connections**: Reads current OpenWebUI connection settings (`GET /api/v1/configs/openai`) and adds/updates the tenant's PAIS OpenAI URL and JWT token (`POST /api/v1/configs/openai`), preserving any existing non-PAIS connections.
-5. **Verifies Chat Readiness**: Sends a test completion request to PAIS to ensure the model is initialized and ready for chat.
+### GitHub Actions Integration
+Secrets for OpenWebUI can be stored in GitHub Repository Secrets:
+* `OPENWEBUI_URL` (e.g. `http://10.138.218.100:3000`)
+* `OPENWEBUI_API_KEY` (or `OPENWEBUI_USERNAME` / `OPENWEBUI_PASSWORD`)
+
+The workflow (`.github/workflows/pais-gitops.yml`) injects these secrets and executes `reconcile_all.py` on push to `main`.
+
+---
+
+## 3. Removing Connections & Models from OpenWebUI
+
+If you wish to remove the PAIS connection and its associated models from OpenWebUI, update `config.yaml`:
+
+```yaml
+openwebui:
+  enabled: false                          # Set to false to remove PAIS connection & models from OpenWebUI
+  remove: true                            # Or set remove: true / state: "absent"
+  url: "${OPENWEBUI_URL}"
+  api_key: "${OPENWEBUI_API_KEY}"
+```
+
+When `setup_pais.py` or `cleanup_pais.py` runs with `enabled: false` or `remove: true`:
+1. It connects to the OpenWebUI REST API (`GET /api/v1/configs/openai`).
+2. It locates and deletes the tenant's PAIS OpenAI Base URL (`https://10.138.217.12/api/v1/compatibility/openai/v1`) from `OPENAI_API_BASE_URLS` and its key from `OPENAI_API_KEYS`.
+3. OpenWebUI immediately purges all models associated with that PAIS endpoint from its active chat model dropdown.
 
 ---
 
