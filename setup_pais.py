@@ -74,8 +74,22 @@ def apply_kubernetes_resources(config: dict, dry_run: bool, config_path: str = "
 
 
 # ---------------------------------------------------------------------------
-# Helper: Universal Resource Updater
+# Helper: Universal Resource Updater & Sanitization Checks
 # ---------------------------------------------------------------------------
+
+def _is_masked(val: Any) -> bool:
+    """Return True if val is None, empty, or contains asterisks / 'masked' indicating secret sanitization by API."""
+    if val is None:
+        return True
+    if isinstance(val, str):
+        s = val.strip()
+        return not s or "*" in s or s.lower() == "masked"
+    if isinstance(val, dict):
+        if not val:
+            return True
+        return any(_is_masked(v) for v in val.values())
+    return False
+
 
 def update_resource(client: pc.PAISClient, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
     """
@@ -143,15 +157,41 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
         existing = client.find_by_name(pc.DATA_SOURCES, name)
         if existing:
             ds_id = existing["id"]
-            name_to_id[name] = ds_id
-            needs_update = (
-                existing.get("description", "") != description
-                or existing.get("type") != ds_type
-                or existing.get("origin_url") != origin_url
-                or existing.get("credentials") != credentials
-                or (ds.get("options") and existing.get("options") != ds.get("options"))
-            )
-            if needs_update:
+
+            # Data sources in PAIS only permit updating description via PATCH.
+            # Changes to immutable parameters (type, origin_url, credentials, options)
+            # require deleting and recreating the data source.
+            immutable_changed = False
+
+            if existing.get("type") and existing.get("type") != ds_type:
+                immutable_changed = True
+            if existing.get("origin_url") and existing.get("origin_url") != origin_url:
+                immutable_changed = True
+            if ds.get("options") and existing.get("options") and existing.get("options") != ds.get("options"):
+                immutable_changed = True
+
+            existing_creds = existing.get("credentials")
+            if existing_creds is not None and isinstance(existing_creds, dict) and isinstance(credentials, dict):
+                for k, v in credentials.items():
+                    val_existing = existing_creds.get(k)
+                    if val_existing is not None and not _is_masked(val_existing):
+                        if str(val_existing).strip() != str(v).strip():
+                            immutable_changed = True
+                            break
+            elif existing_creds is not None and isinstance(existing_creds, str) and not _is_masked(existing_creds):
+                if isinstance(credentials, str) and existing_creds.strip() != credentials.strip():
+                    immutable_changed = True
+
+            description_changed = (existing.get("description", "") != description)
+
+            if immutable_changed:
+                log.info("  [%s] Immutable parameter changed (type, origin_url, credentials, or options). Recreating data source...", name)
+                try:
+                    client.delete(f"{pc.DATA_SOURCES}/{ds_id}")
+                    log.info("  [%s] Deleted old data source (id=%s)", name, ds_id)
+                except Exception as del_exc:
+                    log.warning("  [%s] Failed to delete old data source '%s': %s", name, ds_id, del_exc)
+
                 if test_conn:
                     log.info("  [%s] Testing connectivity...", name)
                     test_payload = {"origin_url": origin_url, "type": ds_type, "credentials": credentials}
@@ -162,10 +202,21 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
                         raise RuntimeError(f"Connectivity test for data source '{name}' failed: {result}")
                     log.info("  [%s] Connectivity OK", name)
 
-                resp = update_resource(client, f"{pc.DATA_SOURCES}/{ds_id}", payload)
-                log.info("  Updated data source '%s' -> id=%s", name, ds_id)
+                resp = client.post(pc.DATA_SOURCES, json_body=payload)
+                new_ds_id = resp["id"]
+                name_to_id[name] = new_ds_id
+                log.info("  [%s] Recreated data source -> id=%s", name, new_ds_id)
+
+            elif description_changed:
+                log.info("  [%s] Updating description...", name)
+                resp = client.patch(f"{pc.DATA_SOURCES}/{ds_id}", json_body={"description": description})
+                name_to_id[name] = ds_id
+                log.info("  Updated data source '%s' description -> id=%s", name, ds_id)
+
             else:
+                name_to_id[name] = ds_id
                 log.info("  Data source '%s' already exists -> id=%s (up to date)", name, ds_id)
+
             continue
 
         if test_conn:
