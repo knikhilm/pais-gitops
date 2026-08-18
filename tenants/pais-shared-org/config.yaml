@@ -1,35 +1,36 @@
 # ============================================================
-# VCF Private AI Services (PAIS) - Tenant: Shared Services
+# VCF Private AI Services (PAIS) - Tenant: Shared Services Org (pais-shared-org)
 # ============================================================
 # Declaratively manages shared cluster-wide PAIS resources:
-#   - K8s Control Plane: Shared Embedding Model & Gateway Routes (shared-services-ns)
-#   - REST Data/Agent Plane: Shared Data Sources, Vector Indexes, and MCP Tools
+#   - K8s Control Plane: Shared ModelEndpoints & InferenceGatewayRoutes
+#   - REST Data/Agent Plane: Shared Data Sources, Vector Indexes, MCP Tools
 # ============================================================
 
 pais:
-  base_url: "${PAIS_BASE_URL}"             # REST Data/Agent Plane API endpoint
+  base_url: "${PAIS_SHARED_BASE_URL}"      # PAIS Shared Org REST API Endpoint
   auth:
-    token_url: "${PAIS_TOKEN_URL}"
-    client_id: "${PAIS_CLIENT_ID}"
-    client_secret: "${PAIS_CLIENT_SECRET}"
+    token_url: "${PAIS_SHARED_TOKEN_URL}"  # OIDC Token URL for Shared Org
+    client_id: "${PAIS_SHARED_CLIENT_ID}"
+    client_secret: "${PAIS_SHARED_CLIENT_SECRET}"
     scope: "openid groups offline_access"
-    username: "${PAIS_USERNAME}"
-    password: "${PAIS_PASSWORD}"
+    username: "${PAIS_SHARED_USERNAME}"
+    password: "${PAIS_SHARED_PASSWORD}"
     verify_ssl: false
   mcp_tool_discovery_timeout_seconds: 60
   rex_discovery_timeout_seconds: 30
 
+  # Kubernetes Cluster & VCFA Namespace for Shared Services Org
   vsphere:
-    server: "${VCF_ENDPOINT}"
-    api_token: "${VCF_API_TOKEN}"
-    username: "${VCF_USER}"
-    password: "${VCF_PASSWORD}"
+    server: "${VCF_SHARED_ENDPOINT}"
+    api_token: "${VCF_SHARED_API_TOKEN}"
+    username: "${VCF_SHARED_USER}"
+    password: "${VCF_SHARED_PASSWORD}"
     type: "cci"
     auth_type: "basic"
     tenant_name: "all-apps"
-    namespace: "${SHARED_VCF_NAMESPACE:-shared-services-ns}"
-    project_name: "${SHARED_VCF_PROJECT:-shared-project}"
-    context_name: "vcf-shared-services"
+    namespace: "${VCF_SHARED_NAMESPACE}"
+    project_name: "${VCF_SHARED_PROJECT}"
+    context_name: "vcf-pais-shared-org"
 
   registry:
     server: "${HARBOR_REGISTRY}"
@@ -40,12 +41,13 @@ pais:
     insecure_skip_tls_verify: true
     ca_cert: "${HARBOR_CA_CERT}"
 
+  # API Token Secrets provisioned for InferenceGatewayRoute authentication
   api_tokens:
     - name: "shared-models-token"
       api_token: "${SHARED_MODELS_API_TOKEN}"
 
 # ============================================================
-# 1. KUBERNETES MODEL ENDPOINTS (shared-services-ns)
+# 1. KUBERNETES MODEL ENDPOINTS (Shared Org)
 # ============================================================
 model_endpoints:
   - name: "bge-small"
@@ -59,7 +61,7 @@ model_endpoints:
       oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/bge-small-en-v1.5:v1.0"
 
 # ============================================================
-# 2. INFERENCE GATEWAY ROUTES (shared-services-ns)
+# 2. INFERENCE GATEWAY ROUTES (Shared Org)
 # ============================================================
 inference_routes:
   - name: "bge-small-route"
