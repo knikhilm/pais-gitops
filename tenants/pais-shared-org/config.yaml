@@ -7,6 +7,7 @@
 # ============================================================
 
 pais:
+  priority: 1                             # Priority 1: Infrastructure / Shared models deployed first
   base_url: "${PAIS_SHARED_BASE_URL}"      # PAIS Shared Org REST API Endpoint
   auth:
     token_url: "${PAIS_SHARED_TOKEN_URL}"  # OIDC Token URL for Shared Org

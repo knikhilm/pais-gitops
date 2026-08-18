@@ -122,63 +122,12 @@ jobs:
           echo "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
 
-      - name: Discover and Reconcile All Tenant Configs
+      - name: Discover and Reconcile All Tenant Configs (Priority Order)
         shell: bash
+        env:
+          BEFORE_COMMIT: ${{ github.event.before }}
         run: |
-          set -euo pipefail
-
-          # Discover all active config.yaml files
-          CONFIG_FILES=()
-          if [ -f "config.yaml" ]; then
-            CONFIG_FILES+=("config.yaml")
-          fi
-          for cfg in tenants/*/config.yaml; do
-            if [ -f "$cfg" ]; then
-              CONFIG_FILES+=("$cfg")
-            fi
-          done
-
-          if [ ${#CONFIG_FILES[@]} -eq 0 ]; then
-            echo "No config.yaml files found."
-            exit 0
-          fi
-
-          echo "Discovered tenant config files: ${CONFIG_FILES[*]}"
-
-          BEFORE="${{ github.event.before }}"
-
-          for CFG in "${CONFIG_FILES[@]}"; do
-            echo ""
-            echo "=========================================================================="
-            echo "RECONCILING TENANT CONFIG: ${CFG}"
-            echo "=========================================================================="
-
-            OLD_OUT="${RUNNER_TEMP}/old_${CFG//\//_}.yaml"
-            HAS_OLD=false
-
-            if [ -n "${BEFORE}" ] && [ "${BEFORE}" != "0000000000000000000000000000000000000000" ] \
-               && git cat-file -e "${BEFORE}:${CFG}" 2>/dev/null; then
-              git show "${BEFORE}:${CFG}" > "$OLD_OUT"
-              HAS_OLD=true
-              echo "Captured previous config from ${BEFORE}"
-            elif git rev-parse HEAD~1 >/dev/null 2>&1 && git cat-file -e "HEAD~1:${CFG}" 2>/dev/null; then
-              git show "HEAD~1:${CFG}" > "$OLD_OUT"
-              HAS_OLD=true
-              echo "Captured previous config from HEAD~1"
-            fi
-
-            # 1. Apply additions and updates
-            python setup_pais.py --config "$CFG" ${DRY_RUN_FLAG}
-
-            # 2. Apply removals if previous config version exists
-            if [ "$HAS_OLD" = "true" ]; then
-              python cleanup_pais.py \
-                --old-config "$OLD_OUT" \
-                --new-config "$CFG" ${DRY_RUN_FLAG}
-            else
-              echo "No previous config version found for ${CFG} - skipping removals."
-            fi
-          done
+          python reconcile_all.py ${DRY_RUN_FLAG}
 
       - name: Upload Generated Kubernetes Manifests as Artifact
         if: always()

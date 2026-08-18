@@ -7,6 +7,7 @@
 # ============================================================
 
 pais:
+  priority: 10                            # Priority 10: Application workloads run after shared models
   base_url: "${PAIS_ALL_APPS_BASE_URL}"      # PAIS All-Apps Org REST API Endpoint
   auth:
     token_url: "${PAIS_ALL_APPS_TOKEN_URL}"  # OIDC Token URL for All-Apps Org
