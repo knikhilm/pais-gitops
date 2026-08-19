@@ -45,7 +45,7 @@ pais:
   # API Token Secrets provisioned for InferenceGatewayRoute authentication
   api_tokens:
     - name: "shared-models-token"
-      api_token: "${VCF_ALL_APPS_API_TOKEN}"
+      api_token: "vcfa:pais-all-apps:${VCF_ALL_APPS_API_TOKEN}"
 
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (All-Apps Org)
