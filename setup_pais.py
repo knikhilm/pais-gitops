@@ -40,6 +40,7 @@ from typing import Any
 
 import k8s_manager as km
 import pais_client as pc
+import setup_openwebui
 from pais_client import log
 
 
@@ -1033,6 +1034,11 @@ def main(argv: list[str] | None = None) -> None:
         kb_rex = discover_rex_tools(client, kb_info, args.dry_run, rex_timeout)
         agents = apply_agents(client, cfg.get("agents", []), kb_rex, mcp_tool_key_to_id, args.dry_run)
 
+        if setup_openwebui.should_remove_openwebui(cfg):
+            owui_status = "Removed" if setup_openwebui.remove_openwebui_integration(cfg, dry_run=args.dry_run) else "Removal Failed/Skipped"
+        else:
+            owui_status = "Configured" if setup_openwebui.apply_openwebui_integration(cfg, client=client, dry_run=args.dry_run) else "Skipped/Disabled"
+
         log.info("")
         log.info("=== Apply Complete ===")
         log.info("K8s Manifests  : %d generated/applied", len(k8s_manifests))
@@ -1043,6 +1049,7 @@ def main(argv: list[str] | None = None) -> None:
         log.info("Agents         : %d", len(agents))
         for agent in agents:
             log.info("  -> '%s'  id=%s  status=%s", agent.get("name"), agent.get("id"), agent.get("status"))
+        log.info("OpenWebUI Setup: %s", owui_status)
 
     except (RuntimeError, ValueError, TimeoutError) as exc:
         log.error("FATAL: %s", exc)

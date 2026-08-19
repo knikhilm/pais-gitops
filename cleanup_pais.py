@@ -37,6 +37,7 @@ import sys
 
 import k8s_manager as km
 import pais_client as pc
+import setup_openwebui
 from pais_client import log
 
 
@@ -220,6 +221,31 @@ def delete_removed_data_sources(client: pc.PAISClient, old: dict, new: dict, dry
     return count
 
 
+def cleanup_openwebui_integration(old_cfg: dict, new_cfg: dict, dry_run: bool) -> int:
+    old_owui = old_cfg.get("openwebui", {})
+    new_owui = new_cfg.get("openwebui", {})
+
+    should_remove = False
+    target_cfg = new_cfg
+
+    if setup_openwebui.should_remove_openwebui(new_cfg):
+        should_remove = True
+        target_cfg = new_cfg
+    elif setup_openwebui._is_enabled(old_owui.get("enabled")) and not setup_openwebui._is_enabled(new_owui.get("enabled")):
+        should_remove = True
+        # Merge old config's URL/credentials if omitted in new_cfg
+        merged_owui = dict(old_owui)
+        merged_owui.update(new_owui)
+        target_cfg = dict(new_cfg)
+        target_cfg["openwebui"] = merged_owui
+
+    if should_remove:
+        removed = setup_openwebui.remove_openwebui_integration(target_cfg, dry_run=dry_run)
+        return 1 if removed else 0
+
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -262,8 +288,9 @@ def main(argv: list[str] | None = None) -> None:
         kbs_removed = delete_removed_knowledge_bases(client, old_cfg, new_cfg, args.dry_run)
         servers_removed = delete_removed_mcp_servers(client, old_cfg, new_cfg, args.dry_run)
         ds_removed = delete_removed_data_sources(client, old_cfg, new_cfg, args.dry_run)
+        owui_removed = cleanup_openwebui_integration(old_cfg, new_cfg, args.dry_run)
 
-        total = agents_removed + tools_revoked + links_removed + kbs_removed + servers_removed + ds_removed
+        total = agents_removed + tools_revoked + links_removed + kbs_removed + servers_removed + ds_removed + owui_removed
         log.info("")
         log.info("=== Cleanup Complete ===")
         log.info("Agents deleted        : %d", agents_removed)
@@ -272,6 +299,7 @@ def main(argv: list[str] | None = None) -> None:
         log.info("Knowledge bases deleted: %d", kbs_removed)
         log.info("MCP servers deleted   : %d", servers_removed)
         log.info("Data sources deleted  : %d", ds_removed)
+        log.info("OpenWebUI removals    : %d", owui_removed)
         if total == 0:
             log.info("No removals detected between the two config versions.")
 

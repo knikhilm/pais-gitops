@@ -248,3 +248,17 @@ agents:
         tool_name: "create_ticket"
       - server: "ticketing-service"
         tool_name: "search_tickets"
+
+# ============================================================
+# 7. OPENWEBUI INTEGRATION (Optional)
+# ============================================================
+openwebui:
+  enabled: true                           # Set to true to automatically configure PAIS OpenAI endpoint in OpenWebUI
+  url: "${OPENWEBUI_URL}"                 # Base URL of existing OpenWebUI instance, e.g. http://10.138.218.100:3000
+  api_key: "${OPENWEBUI_API_KEY}"         # OpenWebUI Admin API key or Bearer token
+  username: "${OPENWEBUI_USERNAME}"       # Fallback if api_key not provided
+  password: "${OPENWEBUI_PASSWORD}"       # Fallback if api_key not provided
+  verify_ssl: false                       # Verify SSL certificate for OpenWebUI URL
+  openai_base_url: "${PAIS_OPENAI_URL}"   # Optional override (defaults to tenant PAIS OpenAI URL: <pais.base_url>/api/v1/compatibility/openai/v1)
+  default_model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+

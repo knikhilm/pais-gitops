@@ -149,3 +149,17 @@ agents:
     mcp_tools:
       - server: "lab-mcp-server"
         tool_name: "Get the current time"
+
+# ============================================================
+# 7. OPENWEBUI INTEGRATION (Optional)
+# ============================================================
+openwebui:
+  enabled: false                          # Disabled for shared infra tenant by default
+  url: "${OPENWEBUI_URL}"
+  api_key: "${OPENWEBUI_API_KEY}"
+  username: "${OPENWEBUI_USERNAME}"
+  password: "${OPENWEBUI_PASSWORD}"
+  verify_ssl: false
+  openai_base_url: ""
+  default_model: "gpt-oss-20b"
+
