@@ -50,28 +50,7 @@ pais:
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (Shared Org)
 # ============================================================
-model_endpoints:
-  - name: "bge-m3"
-    type: "Embeddings"
-    engine: "Infinity"
-    routing_name: "bge-m3"
-    replicas: 1
-    virtual_machine_class_name: "best-effort-large"
-    storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
-    model:
-      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/bge-m3:v1.0"
-  - name: "gpt-oss-20b"
-    type: "Completions"
-    engine: "vLLM"
-    routing_name: "gpt-oss-20b"
-    replicas: 1
-    virtual_machine_class_name: "a100-40c-reserve"
-    storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
-    model:
-      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/openai/gpt-oss-20b:approved"
-    inference_server_customization:
-      cli_args: ["--max-model-len=4096", "--enable-auto-tool-choice", "--tokenizer-mode=slow", "--tool-call-parser=openai", "--trust-remote-code", "--tensor-parallel-size=1", "--gpu-memory-utilization=0.8", "--enforce-eager", "--disable-custom-all-reduce"]
-      env_vars: []
+model_endpoints: []
 
 # ============================================================
 # 2. INFERENCE GATEWAY ROUTES (Shared Org)
@@ -81,85 +60,24 @@ inference_routes: []
 # ============================================================
 # 3. REST DATA SOURCES
 # ============================================================
-data_sources:
-  - name: "vcf-blogs"
-    description: "Shared VCF blogs stored in S3"
-    type: "S3"
-    origin_url: "${S3_ORIGIN_URL}"
-    credentials:
-      access_key: "${S3_ACCESS_KEY}"
-      secret_key: "${S3_SECRET_KEY}"
-    options:
-      bucket: "blogs"
-      prefix: ""
-    test_connection: false
+data_sources: []
 
 # ============================================================
 # 4. KNOWLEDGE BASES & INDEXES
 # ============================================================
-knowledge_bases:
-  - name: "vcf-blogs"
-    description: "Shared VCF Blogs Knowledge Base"
-    data_origin_type: "DATA_SOURCES"
-    index_refresh_policy:
-      policy_type: "MANUAL"
-    data_sources:
-      - "vcf-blogs"
-    index:
-      name: "vcf-blogs-index"
-      description: "Shared VCF blogs index"
-      embeddings_model_endpoint: "bge-m3"
-      text_splitting: "SENTENCE"
-      chunk_size: 300
-      chunk_overlap: 30
-      trigger_indexing: true
-      wait_for_indexing: true
-      indexing_timeout_seconds: 600
-
+knowledge_bases: []
 # ============================================================
 # 5. MCP SERVERS & TOOL APPROVALS
 # ============================================================
-mcp_servers:
-  - name: "lab-mcp-server"
-    description: "Shared Lab MCP server"
-    url: "http://10.138.218.135/sse"
-    transport: "SSE"
-    approve_tools:
-      - "Get the current time"
+mcp_servers: []
 
 # ============================================================
 # 6. AGENTS
 # ============================================================
-agents:
-  - name: "product-support-agent"
-    description: "Agent with access to product docs and support articles plus live tools"
-    model: "gpt-oss-20b"
-    instructions: >
-      You are a helpful product-support assistant. If you don't know the answer, say "I don't know".
-    completion_role: "assistant"
-    session_max_length: 10000
-    session_summarization_strategy: "delete_oldest"
-    chat_system_instruction_mode: "system-message"
-    index_reference_format: "markdown"
-    index_reference_delimiter: "\npais-chat-marker\n"
-    knowledge_bases:
-      - name: "vcf-blogs"
-        top_n: 3
-        similarity_cutoff: 0.5
-    mcp_tools:
-      - server: "lab-mcp-server"
-        tool_name: "Get the current time"
+agents: []
 
 # ============================================================
 # 7. OPENWEBUI INTEGRATION (Optional)
 # ============================================================
-openwebui:
-  enabled: false                          # Disabled for shared infra tenant by default
-  url: "${OPENWEBUI_URL}"
-  api_key: "${OPENWEBUI_API_KEY}"
-  username: "${OPENWEBUI_USERNAME}"
-  password: "${OPENWEBUI_PASSWORD}"
-  verify_ssl: false
-  openai_base_url: ""
-  default_model: "gpt-oss-20b"
+openwebui: []
 
