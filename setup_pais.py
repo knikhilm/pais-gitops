@@ -220,22 +220,21 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
         if existing:
             ds_id = existing["id"]
 
-            # Data sources in PAIS only permit updating description via PATCH.
-            # Changes to immutable parameters (type, origin_url, options)
-            # require unlinking, deleting, recreating, and relinking the data source.
-            immutable_changed = False
+            # Data sources in PAIS cannot be updated via PATCH. Any modification
+            # requires unlinking from KBs, deleting, recreating, and relinking.
+            ds_changed = False
 
             if existing.get("type") and str(existing.get("type")).strip().upper() != str(ds_type or "").strip().upper():
-                immutable_changed = True
+                ds_changed = True
             if existing.get("origin_url") and _normalize_url(existing.get("origin_url")) != _normalize_url(origin_url):
-                immutable_changed = True
+                ds_changed = True
             if ds.get("options") and _options_differ(existing.get("options"), ds.get("options")):
-                immutable_changed = True
+                ds_changed = True
+            if (existing.get("description") or "").strip() != (description or "").strip():
+                ds_changed = True
 
-            description_changed = ((existing.get("description") or "").strip() != (description or "").strip())
-
-            if immutable_changed:
-                log.info("  [%s] Immutable parameter changed (type, origin_url, or options). Unlinking, deleting, and recreating data source...", name)
+            if ds_changed:
+                log.info("  [%s] Data source configuration changed. Unlinking from KBs, deleting, and recreating...", name)
                 unlinked_kb_ids = _unlink_and_delete_data_source(client, ds_id, name)
 
                 if test_conn:
@@ -259,12 +258,6 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
                         log.info("  [%s] Relinked new data source (id=%s) to KB (kb_id=%s)", name, new_ds_id, kb_id)
                     except Exception as relink_exc:
                         log.warning("  [%s] Failed to relink new data source to KB (kb_id=%s): %s", name, kb_id, relink_exc)
-
-            elif description_changed:
-                log.info("  [%s] Updating description...", name)
-                resp = client.patch(f"{pc.DATA_SOURCES}/{ds_id}", json_body={"description": description})
-                name_to_id[name] = ds_id
-                log.info("  Updated data source '%s' description -> id=%s", name, ds_id)
 
             else:
                 name_to_id[name] = ds_id
@@ -463,29 +456,8 @@ def _apply_index(
     }
 
     if existing_index:
-        index_id = existing_index["id"]
-        needs_update = (
-            existing_index.get("description", "") != idx_payload["description"]
-            or existing_index.get("embeddings_model_endpoint") != idx_payload["embeddings_model_endpoint"]
-            or existing_index.get("text_splitting") != idx_payload["text_splitting"]
-            or existing_index.get("chunk_size") != idx_payload["chunk_size"]
-            or existing_index.get("chunk_overlap") != idx_payload["chunk_overlap"]
-        )
-        if needs_update:
-            resp = update_resource(client, f"{pc.kb_indexes(kb_id)}/{index_id}", idx_payload)
-            log.info("  Updated index '%s' -> id=%s", idx_name, index_id)
-            if idx_cfg.get("trigger_indexing", False):
-                log.info("  Triggering re-indexing for updated '%s'...", idx_name)
-                indexing_resp = client.post(pc.kb_indexings(kb_id, index_id))
-                indexing_id = indexing_resp["id"]
-                log.info("  Indexing triggered -> id=%s (state=%s)", indexing_id, indexing_resp.get("state"))
-                if idx_cfg.get("wait_for_indexing", False):
-                    _wait_for_indexing(
-                        client, kb_id, index_id, indexing_id,
-                        idx_cfg.get("indexing_timeout_seconds", 300),
-                    )
-        else:
-            log.info("  Index '%s' already exists -> id=%s (up to date)", idx_name, index_id)
+        index_id = existing_index["id"] if isinstance(existing_index, dict) else str(existing_index)
+        log.info("  Index '%s' already exists for KB '%s' -> id=%s (up to date)", idx_name, kb_name, index_id)
         return index_id
 
     # 4. Fallback POST with 409 conflict handling
