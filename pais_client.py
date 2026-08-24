@@ -633,7 +633,8 @@ class PAISClient:
         Retrieve every object from a paginated list endpoint.
 
         Uses cursor-based pagination (``after`` + ``last_id``) which is robust
-        against objects being deleted mid-iteration.
+        against objects being deleted mid-iteration. Handles endpoints that
+        return raw JSON lists as well as standard paginated dicts {"data": [...]}.
         """
         results: list[dict] = []
         base_params = dict(params or {})
@@ -645,18 +646,34 @@ class PAISClient:
             if after:
                 page_params["after"] = after
             resp = self.get(path, params=page_params)
-            data = resp.get("data", [])
-            results.extend(data)
-            if not resp.get("has_more"):
+
+            if isinstance(resp, list):
+                for item in resp:
+                    if isinstance(item, dict):
+                        results.append(item)
                 break
-            after = resp.get("last_id")
-            if not after:
+            elif isinstance(resp, dict):
+                data = resp.get("data", [])
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            results.append(item)
+                elif isinstance(data, dict):
+                    results.append(data)
+
+                if not resp.get("has_more"):
+                    break
+                after = resp.get("last_id")
+                if not after:
+                    break
+            else:
                 break
+
         return results
 
     def find_by_name(self, path: str, name: str, params: dict | None = None) -> dict | None:
         """Return the first object from a list endpoint whose name matches."""
-        matches = [obj for obj in self.list_all(path, params=params) if obj.get("name") == name]
+        matches = [obj for obj in self.list_all(path, params=params) if isinstance(obj, dict) and obj.get("name") == name]
         if len(matches) > 1:
             log.warning(
                 "Found %d objects named '%s' at %s; using the first (id=%s). "

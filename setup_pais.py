@@ -374,7 +374,7 @@ def apply_knowledge_bases(
 
         _link_data_sources(client, kb_name, kb_id, kb.get("data_sources", []), ds_name_to_id)
 
-        index_id = _apply_index(client, kb_name, kb_id, kb.get("index", {}))
+        index_id = _apply_index(client, kb_name, kb_id, kb.get("index", {}), existing_kb=existing_kb)
         kb_info[kb_name] = {"kb_id": kb_id, "index_id": index_id}
 
     return kb_info
@@ -407,14 +407,51 @@ def _link_data_sources(
         log.info("  Linked data source '%s' -> KB '%s'", ds_name, kb_name)
 
 
-def _apply_index(client: pc.PAISClient, kb_name: str, kb_id: str, idx_cfg: dict) -> str:
+def _apply_index(
+    client: pc.PAISClient,
+    kb_name: str,
+    kb_id: str,
+    idx_cfg: dict,
+    existing_kb: dict | None = None,
+) -> str:
     if not idx_cfg:
         log.warning("  No index defined for KB '%s' - skipping index creation", kb_name)
         return ""
 
     idx_name = idx_cfg.get("name", f"{kb_name}-index")
-    existing_indexes = client.list_all(pc.kb_indexes(kb_id))
-    existing_index = next((i for i in existing_indexes if i.get("name") == idx_name), None)
+    existing_index: dict | None = None
+
+    # 1. Check if existing_kb object already contains index
+    if existing_kb and isinstance(existing_kb, dict):
+        embedded_idx = existing_kb.get("index")
+        if isinstance(embedded_idx, dict) and embedded_idx.get("id"):
+            existing_index = embedded_idx
+        elif isinstance(existing_kb.get("indexes"), list):
+            for i in existing_kb["indexes"]:
+                if isinstance(i, dict) and (i.get("name") == idx_name or i.get("id")):
+                    existing_index = i
+                    break
+
+    # 2. Query list_all on pc.kb_indexes(kb_id)
+    if not existing_index:
+        try:
+            raw_indexes = client.list_all(pc.kb_indexes(kb_id))
+            if raw_indexes:
+                matching = next((i for i in raw_indexes if isinstance(i, dict) and i.get("name") == idx_name), None)
+                existing_index = matching or (raw_indexes[0] if isinstance(raw_indexes[0], dict) else None)
+        except Exception as exc:
+            log.debug("Could not query kb_indexes list for KB '%s': %s", kb_name, exc)
+
+    # 3. Direct GET on pc.kb_indexes(kb_id) if it returns single dict or raw list
+    if not existing_index:
+        try:
+            raw_res = client.get(pc.kb_indexes(kb_id))
+            if isinstance(raw_res, dict) and raw_res.get("id"):
+                existing_index = raw_res
+            elif isinstance(raw_res, list) and raw_res and isinstance(raw_res[0], dict):
+                existing_index = raw_res[0]
+        except Exception:
+            pass
 
     idx_payload = {
         "name": idx_name,
@@ -450,9 +487,29 @@ def _apply_index(client: pc.PAISClient, kb_name: str, kb_id: str, idx_cfg: dict)
         else:
             log.info("  Index '%s' already exists -> id=%s (up to date)", idx_name, index_id)
         return index_id
-    resp = client.post(pc.kb_indexes(kb_id), json_body=idx_payload)
-    index_id = resp["id"]
-    log.info("  Created index '%s' -> id=%s", idx_name, index_id)
+
+    # 4. Fallback POST with 409 conflict handling
+    try:
+        resp = client.post(pc.kb_indexes(kb_id), json_body=idx_payload)
+        index_id = resp["id"]
+        log.info("  Created index '%s' -> id=%s", idx_name, index_id)
+    except Exception as exc:
+        if "409" in str(exc) or "INDEX_FOR_KNOWLEDGE_BASE_ALREADY_EXISTS" in str(exc):
+            log.info("  Index for KB '%s' already exists on server (409 conflict). Resolving existing index ID...", kb_name)
+            try:
+                refetched_kb = client.get(f"{pc.KNOWLEDGE_BASES}/{kb_id}")
+                refetched_idx = refetched_kb.get("index") or {} if isinstance(refetched_kb, dict) else {}
+                index_id = refetched_idx.get("id") if isinstance(refetched_idx, dict) else None
+                if not index_id:
+                    raw_idx_list = client.list_all(pc.kb_indexes(kb_id))
+                    if raw_idx_list and isinstance(raw_idx_list[0], dict):
+                        index_id = raw_idx_list[0].get("id")
+                if index_id:
+                    log.info("  Resolved existing index for KB '%s' -> id=%s", kb_name, index_id)
+                    return index_id
+            except Exception as refetch_exc:
+                log.warning("  Could not resolve existing index ID after 409: %s", refetch_exc)
+        raise
 
     if idx_cfg.get("trigger_indexing", False):
         log.info("  Triggering initial indexing for '%s'...", idx_name)
