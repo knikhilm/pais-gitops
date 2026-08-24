@@ -93,6 +93,7 @@ jobs:
       # --- API Token Secrets for InferenceGatewayRoutes ---
       SHARED_MODELS_API_TOKEN: ${{ secrets.SHARED_MODELS_API_TOKEN }}
       ALL_APPS_BACKEND_API_TOKEN: ${{ secrets.ALL_APPS_BACKEND_API_TOKEN }}
+      GEMINI_TOKEN: ${{ secrets.GEMINI_TOKEN }}
       # --- OCI / Harbor Registry Credentials for Image Pull Secret ---
       HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
       HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
