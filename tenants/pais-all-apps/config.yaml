@@ -82,6 +82,19 @@ inference_routes:
       auth:
         api_token_ref:
           name: "shared-models-token"
+  - name: "gemini-flash-latest-service"
+    type: "Completions"
+    engine: "OpenAI"
+    matches:
+      routing_name: "gemini-flash-latest-shared"
+    backend:
+      http_base_url: "https://10.138.217.12/api/v1/compatibility/openai"
+      model_id: "gemini-flash-latest"
+      tls:
+        verification: "none"
+      auth:
+        api_token_ref:
+          name: "shared-models-token"
 
 # ============================================================
 # 3. REST DATA SOURCES
