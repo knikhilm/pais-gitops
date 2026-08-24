@@ -26,6 +26,7 @@ Each tenant uses explicitly scoped environment variable names for PAIS OIDC auth
 | VCF API Token / Credentials | `VCF_SHARED_API_TOKEN` / `VCF_SHARED_USER` / `VCF_SHARED_PASSWORD` |
 | VCF VCFA Namespace & Project | `VCF_SHARED_NAMESPACE` / `VCF_SHARED_PROJECT` |
 | Gateway API Backend Token | `SHARED_MODELS_API_TOKEN` |
+| Google Gemini API Token | `GEMINI_TOKEN` |
 
 ### `pais-all-apps`
 

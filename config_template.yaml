@@ -60,6 +60,8 @@ kubernetes:
   api_tokens:
     - name: "shared-models-token"
       api_token: "${SHARED_MODELS_API_TOKEN}" # e.g. inject via GitHub Action Secrets
+    - name: "gemini-token"
+      api_token: "${GEMINI_TOKEN}"             # Google Gemini API key / token
 
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (pais.vmware.com/v1alpha1 -> ModelEndpoint)
@@ -132,6 +134,21 @@ inference_routes:
       model_id: "BAAI/bge-small-en-v1.5"
       tls:
         verification: "strict"
+
+  - name: "gemini-flash-latest-service"
+    namespace: "default"
+    type: "Completions"
+    engine: "GoogleOpenAI"
+    matches:
+      routing_name: "gemini-flash-latest"
+    backend:
+      http_base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      model_id: "models/gemini-flash-latest"
+      tls:
+        verification: "strict"
+      auth:
+        api_token_ref:
+          name: "gemini-token"
 
 # ============================================================
 # 3. REST DATA SOURCES

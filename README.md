@@ -273,10 +273,19 @@ model_endpoints:
 
 ### 6.2 Inference Gateway Routing (`inference_routes`)
 
-`InferenceGatewayRoute` maps API client requests to local `ModelEndpoint` services or external providers:
+`InferenceGatewayRoute` maps API client requests to local `ModelEndpoint` services or external providers (e.g., Google Gemini, OpenAI):
 
 ```yaml
+# Provision Kubernetes Secret for backend API token authentication
+pais:
+  api_tokens:
+    - name: "shared-models-token"
+      api_token: "${SHARED_MODELS_API_TOKEN}"
+    - name: "gemini-token"
+      api_token: "${GEMINI_TOKEN}"             # Injected via GEMINI_TOKEN secret/env var
+
 inference_routes:
+  # Route 1: Local Model Endpoint
   - name: "route-llama3-8b"
     namespace: "default"
     type: "Completions"                     # Completions | Embeddings
@@ -288,6 +297,24 @@ inference_routes:
       model_id: "meta-llama/Meta-Llama-3.1-8B-Instruct"
       tls:
         verification: "strict"              # strict | caOnly | none | mutual
+      auth:
+        api_token_ref:
+          name: "shared-models-token"
+
+  # Route 2: External Google Gemini Endpoint
+  - name: "gemini-flash-latest-service"
+    type: "Completions"
+    engine: "GoogleOpenAI"                  # Or OpenAI
+    matches:
+      routing_name: "gemini-flash-latest"
+    backend:
+      http_base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      model_id: "models/gemini-flash-latest"
+      tls:
+        verification: "strict"
+      auth:
+        api_token_ref:
+          name: "gemini-token"               # References gemini-token secret above
 ```
 
 ### 6.3 Data Sources & Knowledge Bases
@@ -382,6 +409,7 @@ Secret interpolation uses `${ENV_VAR_NAME}` syntax:
 | `HARBOR_CA_CERT` | (Optional) PEM-encoded self-signed CA certificate for Harbor |
 | `GDRIVE_CREDENTIALS` | Service Account JSON string for Google Drive |
 | `S3_CREDENTIALS` | S3 Access Key / Secret JSON string |
+| `GEMINI_TOKEN` | (Optional) API Key / token for Google Gemini endpoint (e.g. Google Generative Language API) |
 | `KUBECONFIG_DATA` | (Optional) Base64-encoded Kubeconfig for direct `kubectl apply` |
 
 ---
@@ -422,7 +450,7 @@ The framework scales to multiple VCFA organizations and Kubernetes namespaces us
 #### Shared Services Org (`pais-shared-org`)
 - **PAIS REST API**: `PAIS_SHARED_BASE_URL`, `PAIS_SHARED_TOKEN_URL`, `PAIS_SHARED_CLIENT_ID`, `PAIS_SHARED_CLIENT_SECRET`, `PAIS_SHARED_USERNAME`, `PAIS_SHARED_PASSWORD`
 - **vSphere / VCF CLI**: `VCF_SHARED_ENDPOINT`, `VCF_SHARED_API_TOKEN`, `VCF_SHARED_USER`, `VCF_SHARED_PASSWORD`, `VCF_SHARED_NAMESPACE`, `VCF_SHARED_PROJECT`
-- **Inference Route Token**: `SHARED_MODELS_API_TOKEN`
+- **Inference Route Tokens**: `SHARED_MODELS_API_TOKEN`, `GEMINI_TOKEN`
 
 #### All Applications Org (`pais-all-apps`)
 - **PAIS REST API**: `PAIS_ALL_APPS_BASE_URL`, `PAIS_ALL_APPS_TOKEN_URL`, `PAIS_ALL_APPS_CLIENT_ID`, `PAIS_ALL_APPS_CLIENT_SECRET`, `PAIS_ALL_APPS_USERNAME`, `PAIS_ALL_APPS_PASSWORD`
@@ -473,6 +501,9 @@ gh secret set VCF_ALL_APPS_API_TOKEN    --body "all-apps-vcf-api-token"
 gh secret set VCF_ALL_APPS_NAMESPACE    --body "pais-all-apps-ns"
 gh secret set VCF_ALL_APPS_PROJECT      --body "pais-all-apps-project"
 gh secret set ALL_APPS_BACKEND_API_TOKEN --body "apps-backend-token-value"
+
+# External Provider Secrets (for Gemini endpoints)
+gh secret set GEMINI_TOKEN              --body "your-gemini-api-key"
 
 # OCI Registry Secrets (for pulling model artifacts)
 gh secret set HARBOR_REGISTRY           --body "harbor.internal.example.com"

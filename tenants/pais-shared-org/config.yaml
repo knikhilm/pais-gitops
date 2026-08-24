@@ -46,6 +46,8 @@ pais:
   api_tokens:
     - name: "shared-models-token"
       api_token: "${VCF_SHARED_API_TOKEN}"
+    - name: "gemini-token"
+      api_token: "${GEMINI_TOKEN}"
 
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (Shared Org)
@@ -55,7 +57,20 @@ model_endpoints: []
 # ============================================================
 # 2. INFERENCE GATEWAY ROUTES (Shared Org)
 # ============================================================
-inference_routes: []
+inference_routes:
+  - name: "gemini-flash-latest-service"
+    type: "Completions"
+    engine: "GoogleOpenAI"
+    matches:
+      routing_name: "gemini-flash-latest"
+    backend:
+      http_base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      model_id: "models/gemini-flash-latest"
+      tls:
+        verification: "strict"
+      auth:
+        api_token_ref:
+          name: "gemini-token"
 
 # ============================================================
 # 3. REST DATA SOURCES
