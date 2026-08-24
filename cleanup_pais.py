@@ -62,6 +62,8 @@ def _by_name(items: Any) -> dict[str, dict]:
 # ---------------------------------------------------------------------------
 
 def delete_removed_agents(client: pc.PAISClient, old: dict, new: dict, dry_run: bool) -> int:
+    old = old if isinstance(old, dict) else {}
+    new = new if isinstance(new, dict) else {}
     removed = _names(old.get("agents")) - _names(new.get("agents"))
     if not removed:
         return 0
@@ -84,14 +86,18 @@ def delete_removed_agents(client: pc.PAISClient, old: dict, new: dict, dry_run: 
 
 def revoke_removed_tool_approvals(client: pc.PAISClient, old: dict, new: dict, dry_run: bool) -> int:
     """For servers present in both configs, un-approve tools dropped from approve_tools."""
+    old = old if isinstance(old, dict) else {}
+    new = new if isinstance(new, dict) else {}
     old_servers = _by_name(old.get("mcp_servers"))
     new_servers = _by_name(new.get("mcp_servers"))
     surviving = set(old_servers) & set(new_servers)
 
     count = 0
     for srv_name in sorted(surviving):
-        old_tools = set(old_servers[srv_name].get("approve_tools", []) or [])
-        new_tools = set(new_servers[srv_name].get("approve_tools", []) or [])
+        srv_old = old_servers[srv_name] if isinstance(old_servers.get(srv_name), dict) else {}
+        srv_new = new_servers[srv_name] if isinstance(new_servers.get(srv_name), dict) else {}
+        old_tools = set(srv_old.get("approve_tools", []) or [])
+        new_tools = set(srv_new.get("approve_tools", []) or [])
         revoked = old_tools - new_tools
         if not revoked:
             continue
@@ -108,7 +114,7 @@ def revoke_removed_tool_approvals(client: pc.PAISClient, old: dict, new: dict, d
             log.info("  Server '%s' not found - skip tool revocation", srv_name)
             continue
         srv_id = srv_obj["id"]
-        tool_by_name = {t["name"]: t for t in client.list_all(pc.MCP_TOOLS, params={"server": srv_id})}
+        tool_by_name = {t["name"]: t for t in client.list_all(pc.MCP_TOOLS, params={"server": srv_id}) if isinstance(t, dict) and t.get("name")}
         for tool_name in sorted(revoked):
             tool = tool_by_name.get(tool_name)
             if not tool:
@@ -122,14 +128,18 @@ def revoke_removed_tool_approvals(client: pc.PAISClient, old: dict, new: dict, d
 
 def unlink_removed_data_sources(client: pc.PAISClient, old: dict, new: dict, dry_run: bool) -> int:
     """For KBs present in both configs, unlink data sources dropped from the KB."""
+    old = old if isinstance(old, dict) else {}
+    new = new if isinstance(new, dict) else {}
     old_kbs = _by_name(old.get("knowledge_bases"))
     new_kbs = _by_name(new.get("knowledge_bases"))
     surviving = set(old_kbs) & set(new_kbs)
 
     count = 0
     for kb_name in sorted(surviving):
-        old_ds = set(old_kbs[kb_name].get("data_sources", []) or [])
-        new_ds = set(new_kbs[kb_name].get("data_sources", []) or [])
+        kb_old = old_kbs[kb_name] if isinstance(old_kbs.get(kb_name), dict) else {}
+        kb_new = new_kbs[kb_name] if isinstance(new_kbs.get(kb_name), dict) else {}
+        old_ds = set(kb_old.get("data_sources", []) or [])
+        new_ds = set(kb_new.get("data_sources", []) or [])
         unlinked = old_ds - new_ds
         if not unlinked:
             continue
@@ -168,6 +178,8 @@ def unlink_removed_data_sources(client: pc.PAISClient, old: dict, new: dict, dry
 
 
 def delete_removed_knowledge_bases(client: pc.PAISClient, old: dict, new: dict, dry_run: bool) -> int:
+    old = old if isinstance(old, dict) else {}
+    new = new if isinstance(new, dict) else {}
     removed = _names(old.get("knowledge_bases")) - _names(new.get("knowledge_bases"))
     if not removed:
         return 0
@@ -189,6 +201,8 @@ def delete_removed_knowledge_bases(client: pc.PAISClient, old: dict, new: dict, 
 
 
 def delete_removed_mcp_servers(client: pc.PAISClient, old: dict, new: dict, dry_run: bool) -> int:
+    old = old if isinstance(old, dict) else {}
+    new = new if isinstance(new, dict) else {}
     removed = _names(old.get("mcp_servers")) - _names(new.get("mcp_servers"))
     if not removed:
         return 0
@@ -210,6 +224,8 @@ def delete_removed_mcp_servers(client: pc.PAISClient, old: dict, new: dict, dry_
 
 
 def delete_removed_data_sources(client: pc.PAISClient, old: dict, new: dict, dry_run: bool) -> int:
+    old = old if isinstance(old, dict) else {}
+    new = new if isinstance(new, dict) else {}
     removed = _names(old.get("data_sources")) - _names(new.get("data_sources"))
     if not removed:
         return 0
@@ -231,8 +247,10 @@ def delete_removed_data_sources(client: pc.PAISClient, old: dict, new: dict, dry
 
 
 def cleanup_openwebui_integration(old_cfg: dict, new_cfg: dict, dry_run: bool) -> int:
-    old_owui = old_cfg.get("openwebui", {})
-    new_owui = new_cfg.get("openwebui", {})
+    old_cfg = old_cfg if isinstance(old_cfg, dict) else {}
+    new_cfg = new_cfg if isinstance(new_cfg, dict) else {}
+    old_owui = old_cfg.get("openwebui", {}) if isinstance(old_cfg.get("openwebui"), dict) else {}
+    new_owui = new_cfg.get("openwebui", {}) if isinstance(new_cfg.get("openwebui"), dict) else {}
 
     should_remove = False
     target_cfg = new_cfg
