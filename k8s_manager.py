@@ -587,12 +587,17 @@ def delete_removed_k8s_resources(old_config: dict, new_config: dict, dry_run: bo
     """
     Identify deleted ModelEndpoints and InferenceGatewayRoutes and remove them via kubectl.
     """
-    old_endpoints = {me["name"]: me for me in old_config.get("model_endpoints", []) if isinstance(me, dict) and me.get("name")}
-    new_endpoints = {me["name"]: me for me in new_config.get("model_endpoints", []) if isinstance(me, dict) and me.get("name")}
+    if not isinstance(old_config, dict):
+        old_config = {}
+    if not isinstance(new_config, dict):
+        new_config = {}
+
+    old_endpoints = {me["name"]: me for me in old_config.get("model_endpoints", []) or [] if isinstance(me, dict) and me.get("name")}
+    new_endpoints = {me["name"]: me for me in new_config.get("model_endpoints", []) or [] if isinstance(me, dict) and me.get("name")}
     removed_endpoints = set(old_endpoints) - set(new_endpoints)
 
-    old_routes = {ir["name"]: ir for ir in old_config.get("inference_routes", []) if isinstance(ir, dict) and ir.get("name")}
-    new_routes = {ir["name"]: ir for ir in new_config.get("inference_routes", []) if isinstance(ir, dict) and ir.get("name")}
+    old_routes = {ir["name"]: ir for ir in old_config.get("inference_routes", []) or [] if isinstance(ir, dict) and ir.get("name")}
+    new_routes = {ir["name"]: ir for ir in new_config.get("inference_routes", []) or [] if isinstance(ir, dict) and ir.get("name")}
     removed_routes = set(old_routes) - set(new_routes)
 
     if not removed_endpoints and not removed_routes:
@@ -603,7 +608,10 @@ def delete_removed_k8s_resources(old_config: dict, new_config: dict, dry_run: bo
     if not dry_run:
         authenticate_k8s_cluster(new_config, dry_run=dry_run)
 
-    default_ns = new_config.get("kubernetes", new_config.get("pais", {})).get("namespace")
+    k8s_val = new_config.get("kubernetes")
+    if not isinstance(k8s_val, dict):
+        k8s_val = new_config.get("pais") if isinstance(new_config.get("pais"), dict) else {}
+    default_ns = k8s_val.get("namespace") if isinstance(k8s_val, dict) else None
 
     for name in sorted(removed_routes):
         route = old_endpoints.get(name) or old_routes.get(name) or {}

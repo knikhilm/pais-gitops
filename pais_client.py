@@ -81,6 +81,9 @@ def load_config(path: str, expand: bool = True) -> dict:
     """Load a YAML config file, optionally expanding ${ENV_VAR} references."""
     with open(path, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh) or {}
+    if not isinstance(cfg, dict):
+        log.warning("Config file '%s' did not parse to a dict (got %s); defaulting to empty dict.", path, type(cfg).__name__)
+        cfg = {}
     if expand:
         cfg = expand_env_vars(cfg)
     return cfg
