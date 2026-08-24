@@ -52,12 +52,46 @@ pais:
 # ============================================================
 # 1. KUBERNETES MODEL ENDPOINTS (Shared Org)
 # ============================================================
-model_endpoints: []
+model_endpoints:
+  - name: "bge-m3"
+    type: "Embeddings"
+    engine: "Infinity"
+    routing_name: "bge-m3"
+    replicas: 1
+    virtual_machine_class_name: "best-effort-large"
+    storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
+    model:
+      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/bge-m3:v1.0"
+  - name: "gpt-oss-20b"
+    type: "Completions"
+    engine: "vLLM"
+    routing_name: "gpt-oss-20b"
+    replicas: 1
+    virtual_machine_class_name: "a100-40c-reserve"
+    storage_class_name: "lvn-vcf05-mgmt-cl01-optimal-datastore-default-policy-autoraid"
+    model:
+      oci_ref: "harbor01.vcf05.showcase.tmm.broadcom.lab/pais/openai/gpt-oss-20b:approved"
+    inference_server_customization:
+      cli_args: ["--max-model-len=4096", "--enable-auto-tool-choice", "--tokenizer-mode=slow", "--tool-call-parser=openai", "--trust-remote-code", "--tensor-parallel-size=1", "--gpu-memory-utilization=0.8", "--enforce-eager", "--disable-custom-all-reduce"]
+      env_vars: []
 
 # ============================================================
 # 2. INFERENCE GATEWAY ROUTES (Shared Org)
 # ============================================================
-inference_routes: []
+inference_routes:
+  - name: "gemini-flash-latest-service"
+    type: "Completions"
+    engine: "GoogleOpenAI"
+    matches:
+      routing_name: "gemini-flash-latest"
+    backend:
+      http_base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      model_id: "models/gemini-flash-latest"
+      tls:
+        verification: "strict"
+      auth:
+        api_token_ref:
+          name: "gemini-token"
 
 # ============================================================
 # 3. REST DATA SOURCES
