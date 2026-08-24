@@ -65,10 +65,12 @@ def get_openwebui_auth_token(owui_url: str, api_key: str, username: str, passwor
             with httpx.Client(verify=verify_ssl, timeout=15) as client:
                 resp = client.post(signin_url, json=payload)
                 if resp.status_code == 200:
-                    token = resp.json().get("token")
-                    if token:
-                        log.info("Successfully signed into OpenWebUI and acquired API token.")
-                        return token
+                    res = resp.json()
+                    if isinstance(res, dict):
+                        token = res.get("token")
+                        if token:
+                            log.info("Successfully signed into OpenWebUI and acquired API token.")
+                            return token
                 log.warning("OpenWebUI signin returned status [%d]: %s", resp.status_code, resp.text)
         except Exception as exc:
             log.warning("Exception during OpenWebUI signin: %s", exc)
@@ -85,9 +87,6 @@ def should_remove_openwebui(cfg: dict) -> bool:
     if owui_cfg.get("remove") is True or str(owui_cfg.get("state")).lower() in ("absent", "remove", "delete"):
         return True
 
-    if owui_cfg.get("enabled") is False and (owui_cfg.get("url") or os.environ.get("OPENWEBUI_URL")):
-        return True
-
     return False
 
 
@@ -98,6 +97,9 @@ def remove_openwebui_integration(cfg: dict, dry_run: bool = False) -> bool:
     log.info("=== Step 7: OpenWebUI Connection & Model Removal ===")
 
     owui_cfg = cfg.get("openwebui", {})
+    if not isinstance(owui_cfg, dict):
+        owui_cfg = {}
+
     owui_url = _resolve_val(owui_cfg.get("url"), ["OPENWEBUI_URL", "OPENWEBUI_BASE_URL"])
     if not owui_url:
         log.info("  OpenWebUI URL not provided in config or OPENWEBUI_URL env var - skipping removal.")
@@ -110,6 +112,8 @@ def remove_openwebui_integration(cfg: dict, dry_run: bool = False) -> bool:
     owui_verify_ssl = owui_cfg.get("verify_ssl", False)
 
     pais_cfg = cfg.get("pais", {})
+    if not isinstance(pais_cfg, dict):
+        pais_cfg = {}
     base_url, _, _ = pc.resolve_connection(pais_cfg)
 
     custom_openai_url = _resolve_val(owui_cfg.get("openai_base_url"), ["PAIS_OPENAI_URL"])
@@ -146,12 +150,23 @@ def remove_openwebui_integration(cfg: dict, dry_run: bool = False) -> bool:
                 return False
 
             cur_data = get_resp.json()
-            base_urls = list(cur_data.get("OPENAI_API_BASE_URLS", []) or [])
-            api_keys = list(cur_data.get("OPENAI_API_KEYS", []) or [])
+            base_urls: list[str] = []
+            api_keys: list[str] = []
+
+            if isinstance(cur_data, dict):
+                base_urls = list(cur_data.get("OPENAI_API_BASE_URLS", []) or [])
+                api_keys = list(cur_data.get("OPENAI_API_KEYS", []) or [])
+            elif isinstance(cur_data, list):
+                for item in cur_data:
+                    if isinstance(item, dict):
+                        if "OPENAI_API_BASE_URLS" in item:
+                            base_urls = list(item.get("OPENAI_API_BASE_URLS") or [])
+                        if "OPENAI_API_KEYS" in item:
+                            api_keys = list(item.get("OPENAI_API_KEYS") or [])
 
             indices_to_remove = []
             for idx, u in enumerate(base_urls):
-                if u.rstrip("/") == pais_openai_url.rstrip("/"):
+                if str(u).rstrip("/") == pais_openai_url.rstrip("/"):
                     indices_to_remove.append(idx)
 
             if not indices_to_remove:
@@ -190,7 +205,7 @@ def apply_openwebui_integration(cfg: dict, client: pc.PAISClient | None = None, 
     log.info("=== Step 7: OpenWebUI Integration ===")
 
     owui_cfg = cfg.get("openwebui", {})
-    if not _is_enabled(owui_cfg.get("enabled")):
+    if not isinstance(owui_cfg, dict) or not _is_enabled(owui_cfg.get("enabled")):
         log.info("  OpenWebUI integration is disabled or omitted in config (skip).")
         return False
 
@@ -208,13 +223,18 @@ def apply_openwebui_integration(cfg: dict, client: pc.PAISClient | None = None, 
 
     # 2. Resolve Target PAIS OpenAI Endpoint & Acquire PAIS Bearer JWT Token
     pais_cfg = cfg.get("pais", {})
+    if not isinstance(pais_cfg, dict):
+        pais_cfg = {}
     base_url, auth_cfg, verify_ssl = pc.resolve_connection(pais_cfg)
 
     custom_openai_url = _resolve_val(owui_cfg.get("openai_base_url"), ["PAIS_OPENAI_URL"])
     if custom_openai_url:
         pais_openai_url = custom_openai_url.rstrip("/")
-    else:
+    elif base_url:
         pais_openai_url = f"{base_url.rstrip('/')}/api/v1/compatibility/openai/v1"
+    else:
+        log.warning("  Could not resolve PAIS OpenAI URL for OpenWebUI integration - skip.")
+        return False
 
     # Acquire PAIS Bearer JWT Token
     pais_jwt_token = ""
@@ -269,15 +289,23 @@ def apply_openwebui_integration(cfg: dict, client: pc.PAISClient | None = None, 
 
             if get_resp.status_code == 200:
                 cur_data = get_resp.json()
-                base_urls = list(cur_data.get("OPENAI_API_BASE_URLS", []) or [])
-                api_keys = list(cur_data.get("OPENAI_API_KEYS", []) or [])
+                if isinstance(cur_data, dict):
+                    base_urls = list(cur_data.get("OPENAI_API_BASE_URLS", []) or [])
+                    api_keys = list(cur_data.get("OPENAI_API_KEYS", []) or [])
+                elif isinstance(cur_data, list):
+                    for item in cur_data:
+                        if isinstance(item, dict):
+                            if "OPENAI_API_BASE_URLS" in item:
+                                base_urls = list(item.get("OPENAI_API_BASE_URLS") or [])
+                            if "OPENAI_API_KEYS" in item:
+                                api_keys = list(item.get("OPENAI_API_KEYS") or [])
             else:
                 log.info("  OpenWebUI GET /api/v1/configs/openai returned status [%d] - initializing new config.", get_resp.status_code)
 
             # Check if PAIS OpenAI URL already present in base_urls
             matched_index = -1
             for idx, u in enumerate(base_urls):
-                if u.rstrip("/") == pais_openai_url.rstrip("/"):
+                if str(u).rstrip("/") == pais_openai_url.rstrip("/"):
                     matched_index = idx
                     break
 
@@ -333,7 +361,13 @@ def _verify_pais_models_and_chat(pais_openai_url: str, jwt_token: str, target_mo
             resp = client.get(models_url, headers=headers)
             if resp.status_code == 200:
                 models_data = resp.json()
-                model_ids = [m.get("id") for m in models_data.get("data", []) if m.get("id")]
+                raw_models: list = []
+                if isinstance(models_data, list):
+                    raw_models = models_data
+                elif isinstance(models_data, dict):
+                    raw_models = models_data.get("data", []) or []
+
+                model_ids = [m.get("id") for m in raw_models if isinstance(m, dict) and m.get("id")]
                 log.info("  Verified PAIS OpenAI models available (%d model(s)): %s", len(model_ids), model_ids)
 
                 if model_ids and target_model not in model_ids:
@@ -349,8 +383,11 @@ def _verify_pais_models_and_chat(pais_openai_url: str, jwt_token: str, target_mo
                 }
                 chat_resp = client.post(chat_url, headers=headers, json=chat_payload)
                 if chat_resp.status_code == 200:
-                    choices = chat_resp.json().get("choices", [])
-                    if choices:
+                    chat_json = chat_resp.json()
+                    choices: list = []
+                    if isinstance(chat_json, dict):
+                        choices = chat_json.get("choices", []) or []
+                    if choices and isinstance(choices[0], dict):
                         ans = choices[0].get("message", {}).get("content", "").strip()
                         log.info("  PAIS Chat Completion test successful for model '%s': '%s'", target_model, ans)
                 else:

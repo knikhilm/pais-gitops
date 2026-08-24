@@ -296,6 +296,22 @@ def apply_data_sources(client: pc.PAISClient, ds_configs: list[dict], dry_run: b
 # 2 & 3. Knowledge Bases + Indexes
 # ---------------------------------------------------------------------------
 
+def _refresh_policies_differ(p1: Any, p2: Any) -> bool:
+    if not isinstance(p1, dict):
+        p1 = {}
+    if not isinstance(p2, dict):
+        p2 = {}
+    type1 = str(p1.get("policy_type") or "").strip().upper()
+    type2 = str(p2.get("policy_type") or "").strip().upper()
+    if type1 != type2:
+        return True
+    cron1 = str(p1.get("cron_expression") or "").strip()
+    cron2 = str(p2.get("cron_expression") or "").strip()
+    if cron1 != cron2:
+        return True
+    return False
+
+
 def apply_knowledge_bases(
     client: pc.PAISClient,
     kb_configs: list[dict],
@@ -311,11 +327,15 @@ def apply_knowledge_bases(
 
     for kb in kb_configs:
         kb_name = kb["name"]
+        description = kb.get("description", "")
+        data_origin_type = kb.get("data_origin_type", "DATA_SOURCES")
+        refresh_policy = kb.get("index_refresh_policy", {"policy_type": "MANUAL"})
+
         kb_payload = {
             "name": kb_name,
-            "description": kb.get("description", ""),
-            "data_origin_type": kb.get("data_origin_type", "DATA_SOURCES"),
-            "index_refresh_policy": kb.get("index_refresh_policy", {"policy_type": "MANUAL"}),
+            "description": description,
+            "data_origin_type": data_origin_type,
+            "index_refresh_policy": refresh_policy,
         }
 
         if dry_run:
@@ -330,13 +350,20 @@ def apply_knowledge_bases(
         existing_kb = client.find_by_name(pc.KNOWLEDGE_BASES, kb_name)
         if existing_kb:
             kb_id = existing_kb["id"]
-            needs_update = (
-                existing_kb.get("description", "") != kb_payload["description"]
-                or existing_kb.get("data_origin_type") != kb_payload["data_origin_type"]
-                or existing_kb.get("index_refresh_policy") != kb_payload["index_refresh_policy"]
-            )
-            if needs_update:
-                resp = update_resource(client, f"{pc.KNOWLEDGE_BASES}/{kb_id}", kb_payload)
+            desc_changed = (existing_kb.get("description") or "").strip() != (description or "").strip()
+            policy_changed = _refresh_policies_differ(existing_kb.get("index_refresh_policy"), refresh_policy)
+
+            if desc_changed or policy_changed:
+                # Note: PAIS REST API rejects 'data_origin_type' on PATCH (extra inputs forbidden).
+                kb_patch_payload = {
+                    "description": description,
+                    "index_refresh_policy": refresh_policy,
+                }
+                if "name" in kb:
+                    kb_patch_payload["name"] = kb_name
+
+                log.info("  Updating knowledge base '%s' (id=%s)...", kb_name, kb_id)
+                resp = update_resource(client, f"{pc.KNOWLEDGE_BASES}/{kb_id}", kb_patch_payload)
                 log.info("  Updated knowledge base '%s' -> id=%s", kb_name, kb_id)
             else:
                 log.info("  Knowledge base '%s' already exists -> id=%s (up to date)", kb_name, kb_id)
@@ -1034,10 +1061,14 @@ def main(argv: list[str] | None = None) -> None:
         kb_rex = discover_rex_tools(client, kb_info, args.dry_run, rex_timeout)
         agents = apply_agents(client, cfg.get("agents", []), kb_rex, mcp_tool_key_to_id, args.dry_run)
 
-        if setup_openwebui.should_remove_openwebui(cfg):
-            owui_status = "Removed" if setup_openwebui.remove_openwebui_integration(cfg, dry_run=args.dry_run) else "Removal Failed/Skipped"
-        else:
-            owui_status = "Configured" if setup_openwebui.apply_openwebui_integration(cfg, client=client, dry_run=args.dry_run) else "Skipped/Disabled"
+        try:
+            if setup_openwebui.should_remove_openwebui(cfg):
+                owui_status = "Removed" if setup_openwebui.remove_openwebui_integration(cfg, dry_run=args.dry_run) else "Removal Failed/Skipped"
+            else:
+                owui_status = "Configured" if setup_openwebui.apply_openwebui_integration(cfg, client=client, dry_run=args.dry_run) else "Skipped/Disabled"
+        except Exception as owui_exc:
+            log.warning("OpenWebUI integration step encountered an error: %s", owui_exc)
+            owui_status = f"Skipped/Failed ({owui_exc})"
 
         log.info("")
         log.info("=== Apply Complete ===")
