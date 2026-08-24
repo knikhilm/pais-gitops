@@ -57,20 +57,7 @@ model_endpoints: []
 # ============================================================
 # 2. INFERENCE GATEWAY ROUTES (Shared Org)
 # ============================================================
-inference_routes:
-  - name: "gemini-flash-latest-service"
-    type: "Completions"
-    engine: "GoogleOpenAI"
-    matches:
-      routing_name: "gemini-flash-latest"
-    backend:
-      http_base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
-      model_id: "models/gemini-flash-latest"
-      tls:
-        verification: "strict"
-      auth:
-        api_token_ref:
-          name: "gemini-token"
+inference_routes: []
 
 # ============================================================
 # 3. REST DATA SOURCES
