@@ -45,12 +45,16 @@ from pais_client import log
 # Diff helpers
 # ---------------------------------------------------------------------------
 
-def _names(items: list[dict] | None) -> set[str]:
-    return {item["name"] for item in (items or []) if isinstance(item, dict) and item.get("name")}
+def _names(items: Any) -> set[str]:
+    if not isinstance(items, list):
+        return set()
+    return {item["name"] for item in items if isinstance(item, dict) and item.get("name")}
 
 
-def _by_name(items: list[dict] | None) -> dict[str, dict]:
-    return {item["name"]: item for item in (items or []) if isinstance(item, dict) and item.get("name")}
+def _by_name(items: Any) -> dict[str, dict]:
+    if not isinstance(items, list):
+        return {}
+    return {item["name"]: item for item in items if isinstance(item, dict) and item.get("name")}
 
 
 # ---------------------------------------------------------------------------
@@ -143,10 +147,15 @@ def unlink_removed_data_sources(client: pc.PAISClient, old: dict, new: dict, dry
             continue
         kb_id = kb_obj["id"]
         links = client.list_all(pc.kb_data_source_links(kb_id))
-        link_by_ds_name = {
-            (lnk.get("data_source") or {}).get("name"): lnk.get("id")
-            for lnk in links
-        }
+        link_by_ds_name = {}
+        for lnk in links:
+            if isinstance(lnk, dict):
+                ds_val = lnk.get("data_source")
+                ds_name = ds_val.get("name") if isinstance(ds_val, dict) else None
+                lnk_id = lnk.get("id")
+                if ds_name and lnk_id:
+                    link_by_ds_name[ds_name] = lnk_id
+
         for ds_name in sorted(unlinked):
             link_id = link_by_ds_name.get(ds_name)
             if not link_id:
